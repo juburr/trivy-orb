@@ -1,0 +1,272 @@
+description: >
+  Scans with Trivy: a container image, a directory, a root filesystem, a
+  repository, infrastructure as code or an SBOM, for vulnerabilities,
+  misconfigurations, secrets and licenses. Writes a JSON report and the
+  formats in formats (SARIF and a table by default), all rendered from that
+  one scan, plus JUnit for the Tests tab, and stores them. Findings at or
+  above fail_on fail the step unless report_only is true; a scan that can't
+  complete, a stale vulnerability database, or a scan that found nothing to
+  check fails it either way. Run install first, and fetch_db to cache the
+  vulnerability database between jobs.
+parameters:
+  target_type:
+    type: enum
+    enum: ["image", "filesystem", "rootfs", "repository", "config", "sbom"]
+    default: image
+    description: >
+      What target is, and the Trivy command that scans it: image (a container
+      image), filesystem (a directory, such as a checkout: lockfiles and
+      source), rootfs (an unpacked root filesystem: installed packages),
+      repository (a git repository, local or remote), config (infrastructure
+      as code: Dockerfiles, Kubernetes, Helm, Terraform, CloudFormation) or
+      sbom (a CycloneDX or SPDX SBOM).
+  target:
+    type: string
+    default: ""
+    description: >
+      What to scan: an image reference, such as ghcr.io/org/app:1.0 (Trivy
+      looks for it in Docker, containerd and Podman, then pulls it from its
+      registry), a directory, a repository directory or URL, or an SBOM file.
+      Leave empty with input. Environment variables are expanded.
+  input:
+    type: string
+    default: ""
+    description: >
+      For target_type image: an image archive (docker save, gzip allowed) or
+      an OCI image layout directory to scan instead of target, passed as
+      --input. Environment variables are expanded.
+  scanners:
+    type: string
+    default: ""
+    description: >
+      What to look for, separated by commas or spaces: vuln, misconfig,
+      secret and license (sbom: vuln and license). Leave empty for Trivy's
+      default, vuln and secret (config: misconfiguration only; sbom: vuln).
+      Environment variables are expanded.
+  severity:
+    type: string
+    default: ""
+    description: >
+      Severities to report, separated by commas, from UNKNOWN, LOW, MEDIUM,
+      HIGH and CRITICAL, passed as --severity. Trivy leaves the others out of
+      every report. Leave empty to report every severity. Environment
+      variables are expanded.
+  fail_on:
+    type: enum
+    enum: ["critical", "high", "medium", "low", "unknown"]
+    default: high
+    description: >
+      The lowest severity that fails the step: a vulnerability, a failed
+      misconfiguration check, a secret or a license at or above it is a
+      finding. Findings below it are reported, and are skipped tests in the
+      JUnit report.
+  fail_on_eol:
+    type: boolean
+    default: false
+    description: >
+      Also fail when the image's OS is end of life, so its vendor publishes
+      no more fixes, and Trivy's database no new vulnerabilities, for it.
+      Otherwise it is a warning.
+  ignore_unfixed:
+    type: boolean
+    default: false
+    description: Leave out vulnerabilities that have no fixed version yet (--ignore-unfixed).
+  ignore_file:
+    type: string
+    default: ""
+    description: >
+      An ignore file of findings to suppress, passed as --ignorefile: a
+      .trivyignore (one ID per line) or a .trivyignore.yaml. Leave empty for
+      .trivyignore in working_dir, or .trivyignore.yaml when there is no
+      .trivyignore. Suppressed findings are counted in the summary.
+      Environment variables are expanded.
+  vex:
+    type: string
+    default: ""
+    description: >
+      VEX documents (OpenVEX, CycloneDX VEX or CSAF) whose not_affected and
+      fixed statements suppress vulnerabilities, separated by commas or
+      spaces, each passed as --vex; or repo, oci or sbom-ref for Trivy's
+      other VEX sources. Environment variables are expanded.
+  pkg_types:
+    type: string
+    default: ""
+    description: >
+      The packages to check for vulnerabilities: os, library, or os,library,
+      passed as --pkg-types. Leave empty for both.
+  skip_dirs:
+    type: string
+    default: ""
+    description: >
+      Directories to leave out, as globs relative to the scan's root,
+      separated by commas or spaces, each passed as --skip-dirs.
+      Environment variables are expanded.
+  skip_files:
+    type: string
+    default: ""
+    description: >
+      Files to leave out, as globs relative to the scan's root, separated by
+      commas or spaces, each passed as --skip-files. Environment variables
+      are expanded.
+  image_src:
+    type: string
+    default: ""
+    description: >
+      For images: where to look for the image, in order, from docker,
+      containerd, podman and remote, passed as --image-src. Leave empty to
+      try them all in that order.
+  platform:
+    type: string
+    default: ""
+    description: >
+      For a multi-platform image: the platform to scan, such as linux/arm64,
+      passed as --platform. Environment variables are expanded.
+  cache_dir:
+    type: string
+    default: ""
+    description: >
+      Trivy's cache directory, with its databases. Leave empty for the one
+      fetch_db exported in TRIVY_CACHE_DIR, or Trivy's own default,
+      ~/.cache/trivy. Environment variables are expanded.
+  offline:
+    type: boolean
+    default: false
+    description: >
+      Scan with the databases already in cache_dir, as fetch_db leaves them
+      (for example from the workspace), without updating them
+      (--skip-db-update, --skip-java-db-update, --skip-check-update) or
+      looking up Maven dependencies (--offline-scan). The scan fails without
+      a vulnerability database, or with one older than max_db_age_days.
+  max_db_age_days:
+    type: integer
+    default: 7
+    description: >
+      Fail when the vulnerability database was built more than this many
+      days ago: Trivy uses a stale one silently when it isn't updating it.
+      0 means no limit.
+  allow_empty:
+    type: boolean
+    default: false
+    description: >
+      Let a scan pass that found nothing to check: no packages for a
+      vulnerability scan, or no infrastructure as code for a configuration
+      scan. By default such a scan fails, since it checked nothing.
+  timeout:
+    type: string
+    default: ""
+    description: >
+      How long Trivy may take, database downloads included, such as 15m,
+      passed as --timeout. Leave empty for Trivy's 5m.
+  formats:
+    type: string
+    default: "sarif,table"
+    description: >
+      Reports to write besides <report_name>.json, separated by commas or
+      spaces: sarif (<report_name>.sarif, for GitHub code scanning), table
+      (<report_name>.txt, also printed in the log), cyclonedx
+      (<report_name>.cdx.json) and spdx-json (<report_name>.spdx.json) SBOMs
+      with the vulnerabilities, and github (<report_name>.github.json, a
+      dependency snapshot for GitHub's dependency submission API).
+  extra_args:
+    type: string
+    default: ""
+    description: >
+      Further arguments for the Trivy command, such as --detection-priority
+      comprehensive. They are split like shell words, but nothing in them is
+      expanded or run. Options that set the reports, the exit code or the
+      cache directory are refused. Environment variables are expanded.
+  working_dir:
+    type: string
+    default: "."
+    description: The directory to run in. target, input and the other paths are relative to it.
+  output_dir:
+    type: string
+    default: /tmp/trivy-reports
+    description: >
+      Absolute path of the directory to write the reports into. Environment
+      variables are not expanded, since the path is also passed to
+      store_artifacts and store_test_results.
+  report_name:
+    type: string
+    default: trivy
+    description: >
+      The reports' file name without its extension, such as
+      <report_name>.json: letters, digits, '.', '_' and '-'. Give each scan
+      in a job its own.
+  junit:
+    type: boolean
+    default: true
+    description: >
+      Write the findings as JUnit (output_dir/junit/<report_name>.xml), failed
+      at or above fail_on and skipped below it, and store it with
+      store_test_results for CircleCI's Tests tab.
+  run_record:
+    type: boolean
+    default: false
+    description: >
+      Also write a run record (<report_name>.run-record.json): what was
+      scanned, with which trivy and databases, with which settings, and what
+      it found.
+  report_only:
+    type: boolean
+    default: false
+    description: >
+      Report findings without failing the step, to adopt the check gradually.
+      A scan that can't complete, a stale database, or one that checked
+      nothing still fails it.
+  store_artifacts:
+    type: boolean
+    default: true
+    description: Store output_dir as job artifacts under trivy-reports/, including when the step fails.
+  no_output_timeout:
+    type: string
+    default: 10m
+    description: How long the scan may print nothing before CircleCI stops it, such as 30m for a large image.
+steps:
+  - run:
+      name: Trivy scan (<< parameters.target_type >>)
+      working_directory: << parameters.working_dir >>
+      no_output_timeout: << parameters.no_output_timeout >>
+      environment:
+        PARAM_ALLOW_EMPTY: << parameters.allow_empty >>
+        PARAM_CACHE_DIR: << parameters.cache_dir >>
+        PARAM_EXTRA_ARGS: << parameters.extra_args >>
+        PARAM_FAIL_ON: << parameters.fail_on >>
+        PARAM_FAIL_ON_EOL: << parameters.fail_on_eol >>
+        PARAM_FORMATS: << parameters.formats >>
+        PARAM_IGNORE_FILE: << parameters.ignore_file >>
+        PARAM_IGNORE_UNFIXED: << parameters.ignore_unfixed >>
+        PARAM_IMAGE_SRC: << parameters.image_src >>
+        PARAM_INPUT: << parameters.input >>
+        PARAM_JUNIT: << parameters.junit >>
+        PARAM_MAX_DB_AGE_DAYS: << parameters.max_db_age_days >>
+        PARAM_OFFLINE: << parameters.offline >>
+        PARAM_OUTPUT_DIR: << parameters.output_dir >>
+        PARAM_PKG_TYPES: << parameters.pkg_types >>
+        PARAM_PLATFORM: << parameters.platform >>
+        PARAM_REPORT_NAME: << parameters.report_name >>
+        PARAM_REPORT_ONLY: << parameters.report_only >>
+        PARAM_RUN_RECORD: << parameters.run_record >>
+        PARAM_SCANNERS: << parameters.scanners >>
+        PARAM_SEVERITY: << parameters.severity >>
+        PARAM_SKIP_DIRS: << parameters.skip_dirs >>
+        PARAM_SKIP_FILES: << parameters.skip_files >>
+        PARAM_TARGET: << parameters.target >>
+        PARAM_TARGET_TYPE: << parameters.target_type >>
+        PARAM_TIMEOUT: << parameters.timeout >>
+        PARAM_VEX: << parameters.vex >>
+        SCRIPT_TRIVY_LIB: << include(scripts/lib/trivy.sh) >>
+      command: << include(scripts/scan.sh) >>
+  - when:
+      condition: << parameters.junit >>
+      steps:
+        - store_test_results:
+            path: << parameters.output_dir >>/junit/<< parameters.report_name >>.xml
+            when: always
+  - when:
+      condition: << parameters.store_artifacts >>
+      steps:
+        - store_artifacts:
+            path: << parameters.output_dir >>
+            destination: trivy-reports
+            when: always

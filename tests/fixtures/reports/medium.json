@@ -1,0 +1,70 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {
+    "Version": "0.76.1"
+  },
+  "ReportID": "019a3b4c-0000-7000-8000-000000000001",
+  "CreatedAt": "2026-10-30T12:00:00.000000000Z",
+  "ArtifactID": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "ArtifactName": "registry.example/app:1.0",
+  "ArtifactType": "container_image",
+  "Metadata": {
+    "Size": 1024,
+    "OS": {
+      "Family": "alpine",
+      "Name": "3.20.3"
+    },
+    "ImageID": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "RepoTags": [
+      "registry.example/app:1.0"
+    ],
+    "RepoDigests": [
+      "registry.example/app@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    ]
+  },
+  "Results": [
+    {
+      "Target": "registry.example/app:1.0 (alpine 3.20.3)",
+      "Class": "os-pkgs",
+      "Type": "alpine",
+      "Packages": [
+        {
+          "ID": "musl@1.2.5-r0",
+          "Name": "musl",
+          "Version": "1.2.5-r0",
+          "Identifier": {
+            "PURL": "pkg:apk/alpine/musl@1.2.5-r0",
+            "UID": "a1"
+          }
+        },
+        {
+          "ID": "openssl@3.3.2-r0",
+          "Name": "libssl3",
+          "Version": "3.3.2-r0",
+          "Identifier": {
+            "PURL": "pkg:apk/alpine/libssl3@3.3.2-r0",
+            "UID": "a2"
+          }
+        }
+      ],
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2026-0003",
+          "PkgID": "musl@1.2.5-r0",
+          "PkgName": "musl",
+          "InstalledVersion": "1.2.5-r0",
+          "FixedVersion": "",
+          "Status": "affected",
+          "SeveritySource": "nvd",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2026-0003",
+          "Title": "musl: CVE-2026-0003 test vulnerability",
+          "Description": "A test vulnerability.",
+          "Severity": "MEDIUM",
+          "VendorSeverity": {
+            "nvd": 2
+          }
+        }
+      ]
+    }
+  ]
+}

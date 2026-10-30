@@ -1,0 +1,35 @@
+description: >
+  Build an image, scan it with Trivy straight from the Docker daemon, and push
+  it only when no vulnerability, secret or license at or above HIGH turned
+  up. fetch_db caches the vulnerability database between jobs. The reports
+  (JSON, SARIF, a table and JUnit) are stored as artifacts and in the Tests
+  tab, whether the scan passes or not.
+
+usage:
+  version: 2.1
+  orbs:
+    trivy: juburr/trivy-orb@0.1.0
+  jobs:
+    build-scan-push:
+      machine:
+        image: ubuntu-2404:current
+      steps:
+        - checkout
+        - run:
+            name: Build the image
+            command: docker build -t ghcr.io/my-org/my-app:${CIRCLE_SHA1} .
+        - trivy/install
+        - trivy/fetch_db
+        - trivy/scan:
+            target: ghcr.io/my-org/my-app:${CIRCLE_SHA1}
+            image_src: docker
+            ignore_unfixed: true
+            run_record: true
+        - run:
+            name: Push the image
+            command: docker push ghcr.io/my-org/my-app:${CIRCLE_SHA1}
+  workflows:
+    build:
+      jobs:
+        - build-scan-push:
+            context: registry-credentials

@@ -1,0 +1,40 @@
+description: >
+  Scan an image in a private registry: login checks the credentials from
+  two context variables with the registry and stores them where Trivy and
+  Docker read them, scan pulls the image itself (no Docker daemon needed),
+  and logout removes the credentials. Every finding at or above CRITICAL
+  fails the job, and an end-of-life base image does too.
+
+usage:
+  version: 2.1
+  orbs:
+    trivy: juburr/trivy-orb@0.1.0
+  jobs:
+    scan-release:
+      docker:
+        - image: cimg/base:current
+      steps:
+        - trivy/install
+        - trivy/fetch_db
+        - trivy/login:
+            registry: registry.example.com
+            username: REGISTRY_USERNAME
+            password: REGISTRY_PASSWORD
+        - trivy/scan:
+            target: registry.example.com/my-org/my-app:${CIRCLE_TAG}
+            image_src: remote
+            fail_on: critical
+            fail_on_eol: true
+            formats: sarif table cyclonedx
+        - trivy/logout:
+            registry: registry.example.com
+  workflows:
+    release:
+      jobs:
+        - scan-release:
+            context: registry-credentials
+            filters:
+              branches:
+                ignore: /.*/
+              tags:
+                only: /^v.*/

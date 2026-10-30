@@ -1,0 +1,39 @@
+name: Log in to a registry with Trivy
+description: >
+  Logs in to an OCI registry with trivy registry login, which checks the
+  credentials with the registry and stores them where Docker does
+  (~/.docker/config.json), so scan can pull private images from it, and later
+  docker, crane or oras commands can use them too. Run logout when the job no
+  longer needs them. The GitHub Actions twin of the orb's login command.
+author: juburr
+
+inputs:
+  registry:
+    description: >
+      Registry host to log in to, with an optional port, such as ghcr.io or
+      localhost:5000.
+    required: true
+  username:
+    description: >
+      Name of the environment variable holding the username. Set it in the env of
+      the step that uses this action.
+    default: REGISTRY_USERNAME
+  password:
+    description: >
+      Name of the environment variable holding the password or token. It reaches
+      trivy on stdin, never on its command line. Set it in the env of the step that
+      uses this action, from a secret.
+    default: REGISTRY_PASSWORD
+
+runs:
+  using: composite
+  steps:
+    - name: Trivy login
+      shell: bash
+      env:
+        PARAM_PASSWORD: ${{ inputs.password }}
+        PARAM_REGISTRY: ${{ inputs.registry }}
+        PARAM_USERNAME: ${{ inputs.username }}
+      run: >-
+        bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/login.sh"
+        "SCRIPT_TRIVY_LIB=${GITHUB_ACTION_PATH}/../../src/scripts/lib/trivy.sh"

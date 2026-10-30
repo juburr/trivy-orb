@@ -1,0 +1,47 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {
+    "Version": "0.76.1"
+  },
+  "ReportID": "019a3b4c-0000-7000-8000-000000000003",
+  "CreatedAt": "2026-10-30T12:00:00Z",
+  "ArtifactName": ".",
+  "ArtifactType": "filesystem",
+  "Metadata": {},
+  "Results": [
+    {
+      "Target": "package-lock.json",
+      "Class": "lang-pkgs",
+      "Type": "npm",
+      "Packages": [
+        {
+          "ID": "lodash@4.17.15",
+          "Name": "lodash",
+          "Version": "4.17.15",
+          "Identifier": {
+            "PURL": "pkg:npm/lodash@4.17.15",
+            "UID": "n1"
+          }
+        }
+      ],
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2020-8203",
+          "PkgID": "lodash@4.17.15",
+          "PkgName": "lodash",
+          "InstalledVersion": "4.17.15",
+          "FixedVersion": "4.17.19",
+          "Status": "fixed",
+          "SeveritySource": "nvd",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2020-8203",
+          "Title": "lodash: CVE-2020-8203 test vulnerability",
+          "Description": "A test vulnerability.",
+          "Severity": "HIGH",
+          "VendorSeverity": {
+            "nvd": 3
+          }
+        }
+      ]
+    }
+  ]
+}

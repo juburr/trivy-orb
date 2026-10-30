@@ -1,0 +1,352 @@
+# Tests the GitHub Actions in actions/ on GitHub's own runners, as
+# .circleci/test-deploy.yml tests the orb's commands on CircleCI. Each job
+# runs the actions from this checkout (uses: ./actions/...), so a pull
+# request tests its own changes.
+name: GitHub Actions
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # alpine:3.19.0, pinned by digest: end of life, with known vulnerabilities.
+  # mirror.gcr.io serves Docker Hub's images without its anonymous pull limits.
+  VULNERABLE_IMAGE: mirror.gcr.io/library/alpine@sha256:51b67269f354137895d43f3b3d810bfacd3945438e94dc5ac55fdac340352f48
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the offline tests
+        run: |
+          for test in tests/*_test.sh; do
+            echo "=== ${test}"
+            bash "${test}"
+          done
+
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./actions/install
+      - name: Verify the install is the binary the checksum table pins
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          version=$(grep -A3 '^  version:' src/commands/install.yml | sed -n 's/^    default: "\(.*\)"$/\1/p')
+          [[ "$(command -v trivy)" == "${HOME}/bin/trivy" ]]
+          trivy --version | grep -qx "Version: ${version}"
+          expected=$(grep -F "[\"${version}/${ARCH}\"]" src/scripts/install.sh | cut -d'"' -f4)
+          [[ "$(sha512sum "${HOME}/bin/trivy" | cut -d' ' -f1)" == "${expected}" ]]
+      - uses: ./actions/install
+        with:
+          version: 0.69.2
+          install_path: ~/trivy-0.69.2
+      - name: Verify the oldest listed release installs
+        run: |
+          ~/trivy-0.69.2/trivy --version | grep -qx "Version: 0.69.2"
+      - id: unlisted
+        uses: ./actions/install
+        continue-on-error: true
+        with:
+          version: 0.69.1
+          install_path: ~/unlisted
+      - id: compromised
+        uses: ./actions/install
+        continue-on-error: true
+        with:
+          version: 0.69.4
+          verify_checksums: "false"
+          install_path: ~/compromised
+      - name: Verify an unlisted release fails closed, and a compromised one even unverified
+        env:
+          UNLISTED: ${{ steps.unlisted.outcome }}
+          COMPROMISED: ${{ steps.compromised.outcome }}
+        run: |
+          [[ "${UNLISTED}" == "failure" && "${COMPROMISED}" == "failure" ]]
+          [[ ! -e ~/unlisted && ! -e ~/compromised ]]
+
+  # With the download hosts blocked, the install must come from the cache the
+  # install job saved.
+  install-from-cache:
+    needs: install
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Block the download hosts
+        run: |
+          echo "127.0.0.1 github.com objects.githubusercontent.com release-assets.githubusercontent.com" | sudo tee -a /etc/hosts
+          if curl -sSf --max-time 10 -o /dev/null https://github.com; then
+            echo "github.com is still reachable."
+            exit 1
+          fi
+      - uses: ./actions/install
+      - name: Verify the install
+        run: |
+          version=$(grep -A3 '^  version:' src/commands/install.yml | sed -n 's/^    default: "\(.*\)"$/\1/p')
+          trivy --version | grep -qx "Version: ${version}"
+
+  # install_hash.sh, with a real cosign verifying the release's signed
+  # checksums, must print the table's entries for the default version.
+  install-hash:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: juburr/cosign-orb/actions/install@422b417ef8fdca894e242d49111f6711f08d0e74 # v1.1.0
+      - name: Generate the default version's entries and compare them with the table
+        run: |
+          version=$(grep -A3 '^  version:' src/commands/install.yml | sed -n 's/^    default: "\(.*\)"$/\1/p')
+          bash src/scripts/install_hash.sh -v "${version}" | tee "${RUNNER_TEMP}/entries"
+          [[ "$(wc -l < "${RUNNER_TEMP}/entries")" -eq 2 ]]
+          while IFS= read -r entry; do
+            grep -qxF -- "${entry}" src/scripts/install.sh
+          done < "${RUNNER_TEMP}/entries"
+          if bash src/scripts/install_hash.sh -v 0.69.4 > "${RUNNER_TEMP}/compromised.log" 2>&1; then
+            echo "install_hash.sh printed entries for a compromised release."
+            exit 1
+          fi
+          grep -q "was published by an attacker" "${RUNNER_TEMP}/compromised.log"
+
+  # test-deploy.yml's scan-test: every scan on the fixtures, with the
+  # databases fetch_db fetched.
+  scan:
+    runs-on: ubuntu-24.04
+    env:
+      REPORTS: /tmp/trivy-reports
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./actions/install
+      - uses: ./actions/fetch_db
+      - name: Prepare the scan targets
+        run: |
+          mkdir -p ~/targets
+          cp -R tests/fixtures/vulnerable tests/fixtures/clean ~/targets/
+          printf 'GITHUB_TOKEN=ghp_%s\n' "$(openssl rand -hex 18)" > ~/targets/vulnerable/deploy.env
+      - uses: ./actions/scan
+        with:
+          target_type: filesystem
+          target: ~/targets/clean
+          report_name: clean
+          run_record: "true"
+      - name: Verify the clean scan
+        run: |
+          jq -e '.outcome == "passed" and .counts.findings == 0 and .counts.packages == 1' "${REPORTS}/clean.run-record.json"
+      - id: vulnerable
+        uses: ./actions/scan
+        continue-on-error: true
+        with:
+          target_type: filesystem
+          target: ~/targets/vulnerable
+          report_name: vulnerable
+          store_artifacts: "false"
+      - name: Verify the vulnerable scan failed, with every report
+        env:
+          OUTCOME: ${{ steps.vulnerable.outcome }}
+        run: |
+          [[ "${OUTCOME}" == "failure" ]]
+          jq -e '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "lodash")] | length > 0' "${REPORTS}/vulnerable.json"
+          jq -e '[.Results[]?.Secrets[]? | select(.RuleID == "github-pat")] | length == 1' "${REPORTS}/vulnerable.json"
+          if grep -q 'ghp_' "${REPORTS}/vulnerable.json" "${REPORTS}/vulnerable.txt"; then
+            echo "A report holds the token Trivy should have redacted."
+            exit 1
+          fi
+          jq -e --arg root "file://${HOME}/targets/vulnerable/" '.runs[0].originalUriBaseIds.ROOTPATH.uri == $root' "${REPORTS}/vulnerable.sarif"
+          grep -q '<failure ' "${REPORTS}/junit/vulnerable.xml"
+      - uses: ./actions/scan
+        with:
+          target_type: filesystem
+          target: ~/targets/vulnerable
+          report_name: reported
+          report_only: "true"
+          formats: sarif table cyclonedx spdx-json
+      - name: Verify the SBOMs
+        run: |
+          jq -e '([.components[]?.name] | index("lodash")) and (.vulnerabilities | length > 0)' "${REPORTS}/reported.cdx.json"
+          jq -e '[.packages[]?.name] | index("lodash")' "${REPORTS}/reported.spdx.json"
+      - uses: ./actions/scan
+        with:
+          target_type: sbom
+          target: /tmp/trivy-reports/reported.cdx.json
+          report_name: sbom
+          report_only: "true"
+      - id: config
+        uses: ./actions/scan
+        continue-on-error: true
+        with:
+          target_type: config
+          target: ~/targets/vulnerable
+          report_name: config
+          store_artifacts: "false"
+      - name: Verify the SBOM and configuration scans
+        env:
+          OUTCOME: ${{ steps.config.outcome }}
+        run: |
+          jq -e '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "lodash")] | length > 0' "${REPORTS}/sbom.json"
+          [[ "${OUTCOME}" == "failure" ]]
+          jq -e '[.Results[] | select(.Target == "pod.yaml") | .Misconfigurations[]? | select(.Status == "FAIL")] | length > 0' "${REPORTS}/config.json"
+      - uses: ./actions/scan
+        with:
+          target: ${{ env.VULNERABLE_IMAGE }}
+          image_src: remote
+          report_name: image
+          report_only: "true"
+          run_record: "true"
+      - name: Pull and save the image as an archive
+        run: |
+          docker pull "${VULNERABLE_IMAGE}"
+          docker save -o "${RUNNER_TEMP}/alpine.tar" "${VULNERABLE_IMAGE}"
+      - uses: ./actions/scan
+        with:
+          input: ${{ runner.temp }}/alpine.tar
+          report_name: archive
+          report_only: "true"
+      - name: Verify the image scans
+        run: |
+          for report in image archive; do
+            jq -e '.Metadata.OS.Family == "alpine" and .Metadata.OS.EOSL == true' "${REPORTS}/${report}.json"
+            jq -e '[.Results[]?.Vulnerabilities[]?] | length > 0' "${REPORTS}/${report}.json"
+          done
+          jq -e '.target.repo_digests | length > 0' "${REPORTS}/image.run-record.json"
+
+  # test-deploy.yml's offline-test: with Trivy's registries blocked, scans use
+  # the databases and the checks bundle fetch_db fetched.
+  offline:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./actions/install
+      - uses: ./actions/fetch_db
+        with:
+          checks_bundle: "true"
+      - name: Prepare the scan target and block Trivy's registries
+        run: |
+          mkdir -p ~/targets
+          cp -R tests/fixtures/vulnerable ~/targets/
+          echo "0.0.0.0 mirror.gcr.io ghcr.io check.trivy.dev repo.maven.apache.org" | sudo tee -a /etc/hosts
+          if curl -s --max-time 5 https://mirror.gcr.io/v2/ > /dev/null; then
+            echo "mirror.gcr.io is still reachable."
+            exit 1
+          fi
+      - uses: ./actions/scan
+        with:
+          target_type: filesystem
+          target: ~/targets/vulnerable
+          offline: "true"
+          report_only: "true"
+          max_db_age_days: "3"
+      - uses: ./actions/scan
+        with:
+          target_type: config
+          target: ~/targets/vulnerable
+          offline: "true"
+          report_only: "true"
+          report_name: config
+      - name: Verify the offline scans
+        run: |
+          jq -e '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "lodash")] | length > 0' /tmp/trivy-reports/trivy.json
+          jq -e '[.Results[] | select(.Target == "pod.yaml") | .Misconfigurations[]?] | length > 0' /tmp/trivy-reports/config.json
+
+  # test-deploy.yml's login-test: a private image in a local registry:2 that
+  # requires a login, scanned after login and refused after logout.
+  login:
+    runs-on: ubuntu-24.04
+    env:
+      REGISTRY_HOST: localhost:5000
+      # Placeholder credentials for the throwaway registry. login reads them
+      # from the variables its username and password inputs name.
+      REGISTRY_USER: ci-user
+      REGISTRY_SECRET: ci-password
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Start a registry that requires a login, with a private image
+        run: |
+          for image in mirror.gcr.io/library/httpd:2 mirror.gcr.io/library/registry:2 "${VULNERABLE_IMAGE}"; do
+            for attempt in 1 2 3; do
+              docker pull "${image}" && break
+              sleep $((attempt * 10))
+            done
+          done
+          mkdir -p "${RUNNER_TEMP}/registry-auth"
+          docker run --rm --entrypoint htpasswd mirror.gcr.io/library/httpd:2 -Bbn "${REGISTRY_USER}" "${REGISTRY_SECRET}" \
+            > "${RUNNER_TEMP}/registry-auth/htpasswd"
+          docker run -d --name registry -p 5000:5000 -v "${RUNNER_TEMP}/registry-auth:/auth" \
+            -e REGISTRY_AUTH=htpasswd -e REGISTRY_AUTH_HTPASSWD_REALM=trivy-orb-ci \
+            -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd mirror.gcr.io/library/registry:2
+          for _ in $(seq 1 30); do
+            [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://${REGISTRY_HOST}/v2/")" == "401" ]] && break
+            sleep 1
+          done
+          docker tag "${VULNERABLE_IMAGE}" "${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0"
+          printf '%s' "${REGISTRY_SECRET}" | docker login "${REGISTRY_HOST}" -u "${REGISTRY_USER}" --password-stdin
+          docker push "${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0"
+          docker logout "${REGISTRY_HOST}"
+          docker image rm "${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0"
+      - uses: ./actions/install
+      - uses: ./actions/fetch_db
+      - uses: ./actions/login
+        with:
+          registry: ${{ env.REGISTRY_HOST }}
+          username: REGISTRY_USER
+          password: REGISTRY_SECRET
+      - uses: ./actions/scan
+        with:
+          target: ${{ env.REGISTRY_HOST }}/trivy-orb-ci/alpine:3.19.0
+          image_src: remote
+          report_only: "true"
+          report_name: private
+      - uses: ./actions/logout
+        with:
+          registry: ${{ env.REGISTRY_HOST }}
+      - id: after-logout
+        uses: ./actions/scan
+        continue-on-error: true
+        with:
+          target: ${{ env.REGISTRY_HOST }}/trivy-orb-ci/alpine:3.19.0
+          image_src: remote
+          report_only: "true"
+          report_name: after-logout
+          store_artifacts: "false"
+      - name: Verify the private image scanned only while logged in
+        env:
+          OUTCOME: ${{ steps.after-logout.outcome }}
+        run: |
+          jq -e '.Metadata.OS.Family == "alpine"' /tmp/trivy-reports/private.json
+          [[ "${OUTCOME}" == "failure" ]]
+          [[ ! -e /tmp/trivy-reports/after-logout.json ]]
