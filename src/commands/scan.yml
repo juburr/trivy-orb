@@ -145,7 +145,10 @@ parameters:
     description: >
       Fail when the vulnerability database was built more than this many
       days ago: Trivy uses a stale one silently when it isn't updating it.
-      0 means no limit.
+      0 means no limit. For a client of a Trivy server (--server in
+      extra_args, or TRIVY_SERVER), it is the server's database, which trivy
+      0.70.0 and later report; with 0, a client whose report doesn't name it
+      passes too.
   allow_empty:
     type: boolean
     default: false
@@ -176,7 +179,10 @@ parameters:
       Further arguments for the Trivy command, such as --detection-priority
       comprehensive. They are split like shell words, but nothing in them is
       expanded or run. Options that set the reports, the exit code or the
-      cache directory are refused. Environment variables are expanded.
+      cache directory are refused, and so are --token, --password and
+      --registry-token, which the log would show: set TRIVY_TOKEN,
+      TRIVY_PASSWORD or TRIVY_REGISTRY_TOKEN instead. Environment variables
+      are expanded.
   working_dir:
     type: string
     default: "."
@@ -194,7 +200,8 @@ parameters:
     description: >
       The reports' file name without its extension, such as
       <report_name>.json: letters, digits, '.', '_' and '-'. Give each scan
-      in a job its own.
+      in a job its own. A report can't replace a file the scan reads, such as
+      an SBOM an earlier scan wrote.
   junit:
     type: boolean
     default: true

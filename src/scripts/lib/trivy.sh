@@ -445,24 +445,31 @@ tv_epoch() {
     date -u -d "$1" +%s 2> /dev/null
 }
 
-# tv_db_fresh MAX_DAYS: checks the vulnerability database in TV_DB_JSON. It
+# tv_db_fresh MAX_DAYS [server]: checks the vulnerability database in
+# TV_DB_JSON, the one in TV_CACHE_DIR, or with "server" a Trivy server's. It
 # fails when there is none, or when it was built more than MAX_DAYS days ago
 # (0: no limit): Trivy uses a stale database without a word when it is told
-# not to update it.
+# not to update it, and a server serves the one it has.
 tv_db_fresh() {
-    local updated next epoch age
+    local updated next epoch age where="in ${TV_CACHE_DIR}" label="" remedy
+    remedy="Fetch a new one (fetch_db, or a scan without offline)"
+    if [[ "${2:-}" == server ]]; then
+        where="on the Trivy server"
+        label=" (Trivy server)"
+        remedy="Update the server's database"
+    fi
     updated=$(jq -r '.VulnerabilityDB.UpdatedAt // ""' <<< "${TV_DB_JSON}")
     next=$(jq -r '.VulnerabilityDB.NextUpdate // ""' <<< "${TV_DB_JSON}")
     if [[ -z "${updated}" ]] || ! epoch=$(tv_epoch "${updated}"); then
-        echo "ERROR: There is no vulnerability database in ${TV_CACHE_DIR}, or it has no build date." >&2
+        echo "ERROR: There is no vulnerability database ${where}, or it has no build date." >&2
         return 1
     fi
     age=$((($(date -u +%s) - epoch) / 86400))
-    echo "Vulnerability database: built ${updated} (${age} days ago), next update ${next:-unknown}."
+    echo "Vulnerability database${label}: built ${updated} (${age} days ago), next update ${next:-unknown}."
     if ((10#$1 > 0 && age > 10#$1)); then
-        echo "ERROR: The vulnerability database in ${TV_CACHE_DIR} was built $(tv_plural "${age}" day days) ago," >&2
-        echo "  more than max_db_age_days ($1). A stale database misses recent vulnerabilities. Fetch a new one" >&2
-        echo "  (fetch_db, or a scan without offline), or raise max_db_age_days." >&2
+        echo "ERROR: The vulnerability database ${where} was built $(tv_plural "${age}" day days) ago," >&2
+        echo "  more than max_db_age_days ($1). A stale database misses recent vulnerabilities." >&2
+        echo "  ${remedy}, or raise max_db_age_days." >&2
         return 1
     fi
 }
@@ -598,7 +605,8 @@ tv_tool_json() {
 #   TV_TRIVY, TV_TRIVY_VERSION  the trivy that ran, and its version
 #   TV_ARGS                     the arguments it ran with, as an array
 #   TV_TARGET_JSON              what it scanned, as JSON
-#   TV_DB_JSON                  trivy version's account of the databases
+#   TV_DB_JSON                  trivy version's account of the databases, or
+#                               a Trivy server's from the report, with Server
 #   TV_REPORTS                  the report files written
 #   TV_COUNTS                   the counts from tv_counts
 #   TV_GATE_JSON                the gate's settings

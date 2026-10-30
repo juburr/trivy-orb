@@ -300,6 +300,39 @@ jobs:
               exit 1
             fi
             grep -q "is end of life" /tmp/eol.log
+      # Last, since the server holds the scan cache's lock.
+      - run:
+          name: Start A Trivy Server With The Fetched Database
+          background: true
+          command: trivy server --listen 127.0.0.1:4954 --cache-dir "${TRIVY_CACHE_DIR}" --skip-db-update
+      - run:
+          name: Wait For The Trivy Server
+          command: |
+            for _ in $(seq 30); do
+              if curl -fsS http://127.0.0.1:4954/healthz > /dev/null; then
+                exit 0
+              fi
+              sleep 1
+            done
+            echo "FAIL: the Trivy server didn't start."
+            exit 1
+      - trivy-orb/scan:
+          target_type: filesystem
+          target: ~/targets/vulnerable
+          cache_dir: /tmp/client-cache
+          extra_args: --server http://127.0.0.1:4954
+          report_name: client
+          report_only: true
+          run_record: true
+      - run:
+          name: Verify The Client Scan Checked The Server's Database
+          command: |
+            jq -e '.databases.Server == true and (.databases.VulnerabilityDB.UpdatedAt | length > 0)' "${REPORTS}/client.run-record.json"
+            jq -e '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "lodash")] | length > 0' "${REPORTS}/client.json"
+            if [[ -e /tmp/client-cache/db/metadata.json ]]; then
+              echo "FAIL: the client fetched a vulnerability database of its own."
+              exit 1
+            fi
   # Scans offline on a machine whose DNS can't reach Trivy's registries: the databases and checks
   # bundle come from fetch-db-test through the workspace.
   offline-test:

@@ -268,6 +268,16 @@ jobs:
 
 `username` and `password` name environment variables, such as a context's; Trivy also reads Docker's own login and, for ghcr.io, `GITHUB_TOKEN`.
 
+### Scan Through a Trivy Server
+
+```yaml
+- trivy/scan:
+    target: registry.example.com/my-org/my-app:1.0
+    extra_args: --server https://trivy.example.com
+```
+
+A client of a [Trivy server](https://trivy.dev/docs/latest/guide/references/modes/client-server/) needs no database of its own: the server finds the vulnerabilities, and `max_db_age_days` checks the server's database, which trivy 0.70.0 and later name in the report. Set the server's token in `TRIVY_TOKEN`, from a context; `extra_args` can't hold it, since the log shows them.
+
 ### Keep a Run Record
 
 `run_record: true` writes `<report_name>.run-record.json`: the trivy that ran and its SHA-512, its arguments, what it scanned (image digests included), the databases it scanned with, the gate's settings, the counts, and each report's SHA-256, described by [`schemas/run-record.v1.json`](schemas/run-record.v1.json). It answers "what exactly did we check, and with what?" for an audit, without running the scan again.
@@ -331,14 +341,14 @@ It exports `TRIVY_CACHE_DIR`, and `TRIVY_ORB_DB_DIR` (and `TRIVY_ORB_JAVA_DB_DIR
 | `platform` | | The platform of a multi-platform image, such as `linux/arm64` |
 | `cache_dir` | | Default: `TRIVY_CACHE_DIR` from `fetch_db`, or `~/.cache/trivy` |
 | `offline` | `false` | Use the databases in `cache_dir` without updating them |
-| `max_db_age_days` | `7` | Fail when the vulnerability database is older than this; `0` for no limit |
+| `max_db_age_days` | `7` | Fail when the vulnerability database (a Trivy server's, for its client) is older than this; `0` for no limit |
 | `allow_empty` | `false` | Pass a scan that found nothing to check |
 | `timeout` | | Trivy's `--timeout`, such as `15m` |
 | `formats` | `sarif,table` | Reports besides JSON: `sarif`, `table`, `cyclonedx`, `spdx-json`, `github` |
 | `extra_args` | | More Trivy arguments, split like shell words |
 | `working_dir` | `.` | The directory to run in |
 | `output_dir` | `/tmp/trivy-reports` | Where the reports go |
-| `report_name` | `trivy` | The reports' file name |
+| `report_name` | `trivy` | The reports' file name; a report can't replace a file the scan reads |
 | `junit` | `true` | Write the findings as JUnit, for the Tests tab |
 | `run_record` | `false` | Write a run record |
 | `store_artifacts` | `true` | Store `output_dir` as artifacts under `trivy-reports/` |
@@ -386,7 +396,7 @@ What one action exports, later steps see, as with CircleCI's `BASH_ENV`. A few d
 - **Verified downloads.** Trivy is checked against this orb's SHA-512 table before it ever runs, and a cached copy is checked again.
 - **Compromised releases refused.** 0.69.4, which an attacker published with stolen credentials on 19 March 2026 ([GHSA-69fq-xp46-6x23](https://github.com/advisories/GHSA-69fq-xp46-6x23), CVE-2026-33634), is refused before anything is downloaded, whatever `verify_checksums` says, and so are 0.69.5 and 0.69.6, which only ever existed as malicious Docker Hub images.
 - **No telemetry.** Every scan passes `--skip-version-check` and `--disable-telemetry`; Trivy otherwise reports each scan to `check.trivy.dev` unless both are set.
-- **No credentials on command lines.** `login` gives Trivy the password on stdin, with xtrace off, and keeps the job's `TRIVY_PASSWORD` from it.
+- **No credentials on command lines.** `login` gives Trivy the password on stdin, with xtrace off, and keeps the job's `TRIVY_PASSWORD` from it. `scan` refuses `--token`, `--password` and `--registry-token` in `extra_args`: Trivy reads them from `TRIVY_TOKEN` and the like instead.
 - **Secrets stay redacted.** Trivy censors the secrets it finds in every report; the orb writes nothing it didn't.
 - **Nothing executed from parameters.** `extra_args` is split like shell words, with nothing expanded or run, and options that would change the reports or the exit code are refused.
 - **No `sudo`.** Everything installs and caches under `HOME`.

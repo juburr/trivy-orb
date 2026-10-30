@@ -84,9 +84,10 @@
       }
     },
     "databases": {
-      "description": "trivy version --format json for the cache directory it scanned with: Version, and VulnerabilityDB, JavaDB and CheckBundle when they were there. null when the scan ended before it was read.",
+      "description": "trivy version --format json for the cache directory it scanned with: Version, and VulnerabilityDB, JavaDB and CheckBundle when they were there. For a client of a Trivy server, the server's account of itself from the report's Trivy.Server, with Server true. null when the scan ended before it was read.",
       "type": ["object", "null"],
       "properties": {
+        "Server": { "description": "true when Trivy scanned as a client of a Trivy server, whose databases these are.", "const": true },
         "Version": { "type": "string" },
         "VulnerabilityDB": { "$ref": "#/$defs/database" },
         "JavaDB": { "$ref": "#/$defs/database" },

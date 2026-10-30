@@ -244,6 +244,36 @@ jobs:
             jq -e '[.Results[]?.Vulnerabilities[]?] | length > 0' "${REPORTS}/${report}.json"
           done
           jq -e '.target.repo_digests | length > 0' "${REPORTS}/image.run-record.json"
+      # Last, since the server holds the scan cache's lock.
+      - name: Start a Trivy server with the fetched database
+        run: |
+          nohup trivy server --listen 127.0.0.1:4954 --cache-dir "${TRIVY_CACHE_DIR}" --skip-db-update > "${RUNNER_TEMP}/server.log" 2>&1 &
+          for _ in $(seq 30); do
+            if curl -fsS http://127.0.0.1:4954/healthz > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "${RUNNER_TEMP}/server.log"
+          echo "The Trivy server didn't start."
+          exit 1
+      - uses: ./actions/scan
+        with:
+          target_type: filesystem
+          target: ~/targets/vulnerable
+          cache_dir: ${{ runner.temp }}/client-cache
+          extra_args: --server http://127.0.0.1:4954
+          report_name: client
+          report_only: "true"
+          run_record: "true"
+      - name: Verify the client scan checked the server's database
+        run: |
+          jq -e '.databases.Server == true and (.databases.VulnerabilityDB.UpdatedAt | length > 0)' "${REPORTS}/client.run-record.json"
+          jq -e '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "lodash")] | length > 0' "${REPORTS}/client.json"
+          if [[ -e "${RUNNER_TEMP}/client-cache/db/metadata.json" ]]; then
+            echo "The client fetched a vulnerability database of its own."
+            exit 1
+          fi
 
   # test-deploy.yml's offline-test: with Trivy's registries blocked, scans use
   # the databases and the checks bundle fetch_db fetched.

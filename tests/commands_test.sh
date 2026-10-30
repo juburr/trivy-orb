@@ -258,6 +258,7 @@ trivy_not_run() { [[ -z "$(find "${STUB}/calls" -name '*.args')" ]]; }
 scan_call() {
     local call
     for call in "${STUB}/calls/"*.args; do
+        [[ -f "${call}" ]] || continue
         if grep -qx -- --output "${call}" && ! grep -qx convert "${call}"; then
             printf '%s\n' "${call}"
             return 0
@@ -286,6 +287,7 @@ call_having() {
     done
     return 1
 }
+has_call() { call_having "$1" > /dev/null; }
 call_count() { [[ "$(find "${STUB}/calls" -name '*.args' | wc -l)" -eq "$1" ]]; }
 # convert_meta FORMAT: the recorded working directory and TRIVY_* variables
 # of the convert call for FORMAT.
@@ -528,6 +530,40 @@ check "uses the cache directory fetch_db exported" scan_has --cache-dir "${WORK}
 scan target=registry.example/app:1.0 cache_dir="~/other" max_db_age_days=0 -- STUB_REPORT="${FIXTURES}/clean.json" TRIVY_CACHE_DIR="${WORK}/exported"
 check "and cache_dir over it, with ~ expanded" scan_has --cache-dir "${HOME_DIR}/other"
 
+# server_report AGE_DAYS: clean.json as a client of a Trivy server writes it,
+# naming the server's vulnerability database, built AGE_DAYS days ago.
+server_report() {
+    local age=$(($1 * 86400 + 3600))
+    stamp() { date -u -d "@$(($(date -u +%s) - $1))" +%Y-%m-%dT%H:%M:%S.5Z; }
+    jq --arg u "$(stamp "${age}")" --arg n "$(stamp $((age - 86400)))" \
+        '.Trivy.Server = {Version: "0.76.1", VulnerabilityDB: {Version: 2, NextUpdate: $n, UpdatedAt: $u}}' \
+        "${FIXTURES}/clean.json" > "${WORK}/server-$1.json"
+}
+server_report 0
+server_report 10
+scan target=registry.example/app:1.0 cache_dir="${WORK}/empty-cache" run_record=true \
+    "extra_args=--server http://trivy.example:4954" -- STUB_REPORT="${WORK}/server-0.json"
+check "a client of a Trivy server checks the server's database, not the cache directory's" rc_is 0
+check "saying so" said "Vulnerability database (Trivy server): built"
+check "and records it as the server's" json_is trivy.run-record.json '.databases | [.Server, .Version]' '[true,"0.76.1"]'
+scan target=registry.example/app:1.0 -- STUB_REPORT="${WORK}/server-10.json" TRIVY_SERVER=http://trivy.example:4954
+check "a server's stale database fails the scan, though the cache directory's is fresh" rc_is 1
+check "saying it is the server's" said "The vulnerability database on the Trivy server was built 10 days ago"
+scan target=registry.example/app:1.0 -- STUB_REPORT="${WORK}/server-10.json"
+check "a report from a server's client counts as one, as a trivy.yaml can set --server" rc_is 1
+scan target=registry.example/app:1.0 -- STUB_REPORT="${FIXTURES}/clean.json" TRIVY_SERVER=http://trivy.example:4954
+check "a client whose report doesn't name the server's database fails" rc_is 1
+check "saying its age is unknown" said "whose vulnerability database the report doesn't name"
+scan target=registry.example/app:1.0 max_db_age_days=0 -- STUB_REPORT="${FIXTURES}/clean.json" TRIVY_SERVER=http://trivy.example:4954
+check "unless max_db_age_days is 0" rc_is 0
+check "with a warning" said "WARN: The Trivy server's vulnerability database is unknown"
+scan target=registry.example/app:1.0 -- STUB_REPORT="${FIXTURES}/clean.json" \
+    STUB_LOG_LINE="WARN Failed to fetch server version err=\"connection refused\""
+check "a client that couldn't read the server's version fails too" rc_is 1
+check "saying so" said "whose vulnerability database the report doesn't name"
+scan target_type=filesystem target=. scanners=secret -- STUB_REPORT="${FIXTURES}/clean.json" TRIVY_SERVER=http://trivy.example:4954
+check "a client's scan without vulnerabilities needs no database" rc_is 0
+
 echo "=== scan: reports"
 scan target=registry.example/app:1.0 formats="sarif table cyclonedx spdx-json github json" -- STUB_REPORT="${FIXTURES}/clean.json" \
     TRIVY_SEVERITY=CRITICAL TRIVY_IGNOREFILE=missing.yaml
@@ -595,6 +631,22 @@ expect_usage "vex names no file: 'missing.json'." target=x vex=missing.json
 for refused in --format=table "--output x" --exit-code=1 "--cache-dir /tmp" -fjson "-o x" --list-all-pkgs=false --; do
     expect_usage "extra_args can't hold" target=x "extra_args=${refused}"
 done
+expect_usage "Set TRIVY_TOKEN in the job's environment instead." target=x "extra_args=--server http://trivy.example --token s3cret"
+expect_usage "Set TRIVY_REGISTRY_TOKEN in the job's environment instead." target=x "extra_args=--registry-token=s3cret"
+check "and the secret stays out of the log" script_lacks "s3cret"
+mkdir -p "${OUT}"
+echo '{"bomFormat": "CycloneDX"}' > "${OUT}/trivy.cdx.json"
+expect_usage "This scan's report ${OUT}/trivy.cdx.json would replace ${OUT}/trivy.cdx.json, which it scans or reads." \
+    target_type=sbom "target=${OUT}/trivy.cdx.json"
+check "and leaves the SBOM an earlier scan wrote" test -s "${OUT}/trivy.cdx.json"
+ln -sf trivy.cdx.json "${OUT}/sbom.json"
+expect_usage "would replace ${OUT}/sbom.json" target_type=sbom "target=${OUT}/sbom.json" report_name=trivy
+echo 'CVE-2024-0001' > "${OUT}/trivy.txt"
+expect_usage "would replace ${OUT}/trivy.txt" target=x "ignore_file=${OUT}/trivy.txt"
+scan target_type=sbom "target=${OUT}/trivy.cdx.json" report_name=sbom-scan -- STUB_REPORT="${FIXTURES}/clean.json"
+check "an SBOM an earlier scan wrote can be scanned under another report_name" rc_is 0
+check "which keeps it" test -s "${OUT}/trivy.cdx.json"
+rm -f "${OUT}/trivy.cdx.json" "${OUT}/sbom.json" "${OUT}/trivy.txt"
 scan target=x "extra_args=--debug \$(touch ${WORK}/pwned)" -- STUB_REPORT="${FIXTURES}/clean.json"
 check "a \$(...) in extra_args fails the step" failed
 check "and runs nothing" test ! -e "${WORK}/pwned"
@@ -623,9 +675,9 @@ run fetch_db java_db=true checks_bundle=true db_repository=mirror.example/aquase
 check "fetches all three" rc_is 0
 check "the database from the repositories given" grep -qx -- '--db-repository=mirror.example/aquasec/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2' "$(call_having --download-db-only)"
 check "with the timeout" grep -qx -- '--timeout=20m' "$(call_having --download-db-only)"
-check "the Java database with trivy image --download-java-db-only" call_having --download-java-db-only
+check "the Java database with trivy image --download-java-db-only" has_call --download-java-db-only
 check "from its repository" grep -qx -- '--java-db-repository=mirror.example/aquasec/trivy-java-db:1' "$(call_having --download-java-db-only)"
-check "the checks bundle with a config scan of an empty directory" call_having config
+check "the checks bundle with a config scan of an empty directory" has_call config
 check "from its repository" grep -qx -- '--checks-bundle-repository=mirror.example/aquasec/trivy-checks:2' "$(call_having config)"
 check "reports the Java database" said "Java database: built"
 check "and the checks bundle" said "Checks bundle: sha256:c0ffee"

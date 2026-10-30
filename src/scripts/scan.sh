@@ -198,6 +198,9 @@ for word in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
         --format | --output | --exit-code | --exit-on-eol | --cache-dir | --list-all-pkgs | --template | --report \
             | --download-db-only | --download-java-db-only | --output-plugin-arg | --show-suppressed | --)
             usage "extra_args can't hold ${name}: the scan command sets it, or it would change the reports it reads." ;;
+        --token | --password | --registry-token)
+            usage "extra_args can't hold ${name}, which the log and the run record would show." \
+                "Set $(printf 'TRIVY_%s' "${name:2}" | tr 'a-z-' 'A-Z_') in the job's environment instead." ;;
         -f* | -o* | -t*)
             if [[ "${name}" != --* ]]; then
                 usage "extra_args can't hold ${word}: the scan command sets the format, output and template itself."
@@ -207,15 +210,26 @@ for word in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
 done
 tv_require_jq
 tv_output "${PARAM_OUTPUT_DIR}" "${REPORT_NAME}"
+
+# An earlier scan's reports, which would otherwise be stored with this one's.
+# None may be a file this scan reads, such as an SBOM an earlier scan wrote.
+OUTPUTS=("${TV_BASE}.json" "${TV_BASE}.sarif" "${TV_BASE}.txt" "${TV_BASE}.cdx.json" "${TV_BASE}.spdx.json"
+    "${TV_BASE}.github.json" "${TV_BASE}.run-record.json" "${TV_OUT}/junit/${REPORT_NAME}.xml")
+for output in "${OUTPUTS[@]}"; do
+    for source in "${TARGET}" "${INPUT}" "${INPUT%[:@]*}" "${IGNORE_FILE}" ${VEX[@]+"${VEX[@]}"}; do
+        if [[ -n "${source}" && -e "${output}" && "${output}" -ef "${source}" ]]; then
+            usage "This scan's report ${output} would replace ${source}, which it scans or reads." \
+                "Give the scan another report_name or output_dir."
+        fi
+    done
+done
+rm -f "${OUTPUTS[@]}"
+
 tv_trivy
 tv_cache_dir "${PARAM_CACHE_DIR}"
 
 TV_WORK=$(mktemp -d)
 trap 'rm -rf "${TV_WORK}"' EXIT
-
-# An earlier scan's reports, which would otherwise be stored with this one's.
-rm -f "${TV_BASE}.json" "${TV_BASE}.sarif" "${TV_BASE}.txt" "${TV_BASE}.cdx.json" "${TV_BASE}.spdx.json" \
-    "${TV_BASE}.github.json" "${TV_BASE}.run-record.json" "${TV_OUT}/junit/${REPORT_NAME}.xml"
 
 # --- The command line ---
 # TV_ARGS holds what decides what is scanned, for the log and the run record;
@@ -362,9 +376,35 @@ if [[ -z "${ARTIFACT}" || ( -n "${TARGET}" && "${ARTIFACT}" == "${TARGET}" ) ]];
 fi
 
 # --- The databases it used ---
-tv_db_metadata
-if [[ "${ENABLED}" == *" vuln "* ]] && ! tv_db_fresh "${MAX_DB_AGE_DAYS}"; then
-    error "The vulnerability database Trivy scanned with is not fresh enough to trust its result."
+# A client of a Trivy server (--server, TRIVY_SERVER or a trivy.yaml) finds
+# vulnerabilities with the server's databases, which trivy 0.70.0 and later
+# report in .Trivy.Server when they can read the server's /version.
+CLIENT=false
+for word in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
+    [[ "${word}" == --server || "${word}" == --server=* ]] && CLIENT=true
+done
+if [[ -n "${TRIVY_SERVER:-}" ]] || tv_json_is "${REPORT}" '(.Trivy.Server.Version // "") != ""' \
+    || grep -q 'Failed to fetch server version' "${TV_WORK}/trivy.log"; then
+    CLIENT=true
+fi
+DB_AT=""
+if [[ "${CLIENT}" == true ]]; then
+    DB_AT=server
+    TV_DB_JSON=$(jq -c '(.Trivy.Server // {}) + {Server: true}' "${REPORT}")
+else
+    tv_db_metadata
+fi
+if [[ "${ENABLED}" == *" vuln "* ]]; then
+    if [[ "${CLIENT}" == true ]] && ! tv_json_is /dev/stdin '(.VulnerabilityDB.UpdatedAt // "") != ""' <<< "${TV_DB_JSON}"; then
+        if [[ "${MAX_DB_AGE_DAYS}" -gt 0 ]]; then
+            error "Trivy scanned as a client of a Trivy server, whose vulnerability database the report doesn't name," \
+                "so its age is unknown. trivy 0.70.0 and later name it when they can read the server's /version" \
+                "(see the log above). Set max_db_age_days to 0 to accept the server's database whatever its age."
+        fi
+        echo "WARN: The Trivy server's vulnerability database is unknown, and max_db_age_days is 0, so its age isn't checked." >&2
+    elif ! tv_db_fresh "${MAX_DB_AGE_DAYS}" "${DB_AT}"; then
+        error "The vulnerability database Trivy scanned with is not fresh enough to trust its result."
+    fi
 fi
 if [[ "${ENABLED}" == *" misconfig "* ]] && grep -q 'Falling back to embedded checks' "${TV_WORK}/trivy.log"; then
     echo "WARN: Trivy couldn't use its checks bundle and checked misconfigurations with the checks built into trivy ${TV_TRIVY_VERSION}." >&2
