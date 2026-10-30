@@ -26,6 +26,10 @@ env:
   # alpine:3.19.0, pinned by digest: end of life, with known vulnerabilities.
   # mirror.gcr.io serves Docker Hub's images without its anonymous pull limits.
   VULNERABLE_IMAGE: mirror.gcr.io/library/alpine@sha256:51b67269f354137895d43f3b3d810bfacd3945438e94dc5ac55fdac340352f48
+  # Its linux/amd64 manifest, for docker save and docker push: Docker's
+  # containerd image store can't save or push an index it pulled one platform
+  # of.
+  VULNERABLE_IMAGE_AMD64: mirror.gcr.io/library/alpine@sha256:13b7e62e8df80264dbb747995705a986aa530415763a6c58f84a3ca8af9a5bcd
 
 jobs:
   offline-tests:
@@ -226,8 +230,8 @@ jobs:
           run_record: "true"
       - name: Pull and save the image as an archive
         run: |
-          docker pull "${VULNERABLE_IMAGE}"
-          docker save -o "${RUNNER_TEMP}/alpine.tar" "${VULNERABLE_IMAGE}"
+          docker pull "${VULNERABLE_IMAGE_AMD64}"
+          docker save -o "${RUNNER_TEMP}/alpine.tar" "${VULNERABLE_IMAGE_AMD64}"
       - uses: ./actions/scan
         with:
           input: ${{ runner.temp }}/alpine.tar
@@ -297,7 +301,7 @@ jobs:
           persist-credentials: false
       - name: Start a registry that requires a login, with a private image
         run: |
-          for image in mirror.gcr.io/library/httpd:2 mirror.gcr.io/library/registry:2 "${VULNERABLE_IMAGE}"; do
+          for image in mirror.gcr.io/library/httpd:2 mirror.gcr.io/library/registry:2 "${VULNERABLE_IMAGE_AMD64}"; do
             for attempt in 1 2 3; do
               docker pull "${image}" && break
               sleep $((attempt * 10))
@@ -313,7 +317,7 @@ jobs:
             [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://${REGISTRY_HOST}/v2/")" == "401" ]] && break
             sleep 1
           done
-          docker tag "${VULNERABLE_IMAGE}" "${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0"
+          docker tag "${VULNERABLE_IMAGE_AMD64}" "${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0"
           printf '%s' "${REGISTRY_SECRET}" | docker login "${REGISTRY_HOST}" -u "${REGISTRY_USER}" --password-stdin
           docker push "${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0"
           docker logout "${REGISTRY_HOST}"

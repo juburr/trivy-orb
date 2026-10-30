@@ -459,7 +459,7 @@ tv_db_fresh() {
     fi
     age=$((($(date -u +%s) - epoch) / 86400))
     echo "Vulnerability database: built ${updated} (${age} days ago), next update ${next:-unknown}."
-    if (($1 > 0 && age > $1)); then
+    if ((10#$1 > 0 && age > 10#$1)); then
         echo "ERROR: The vulnerability database in ${TV_CACHE_DIR} was built $(tv_plural "${age}" day days) ago," >&2
         echo "  more than max_db_age_days ($1). A stale database misses recent vulnerabilities. Fetch a new one" >&2
         echo "  (fetch_db, or a scan without offline), or raise max_db_age_days." >&2
@@ -505,7 +505,9 @@ tv_rank() {
 
 # tv_counts FINDINGS RANK REPORT: prints the counts for the summary and the
 # run record: findings by class and severity, how many rank at or above
-# RANK, the packages Trivy found, the suppressed findings, and the OS.
+# RANK, the packages Trivy found, the configuration files it checked (a
+# result each, whatever severity and ignore filters left of its checks), the
+# suppressed findings, and the OS.
 tv_counts() {
     # shellcheck disable=SC2016 # jq program, not shell
     jq -c --argjson rank "$2" --slurpfile report "$3" '
@@ -520,6 +522,7 @@ tv_counts() {
             licenses: (map(select(.class == "license")) | bysev),
             packages: ([($r.Results // [])[] | (.Packages // [])[]] | length),
             misconfiguration_checks: ([($r.Results // [])[] | (.MisconfSummary // {}) | (.Successes // 0) + (.Failures // 0)] | add // 0),
+            config_files: ([($r.Results // [])[] | select(.Class == "config")] | length),
             suppressed: ([($r.Results // [])[] | (.ExperimentalModifiedFindings // [])[]] | length),
             os: ($r.Metadata.OS // null)
           }' <<< "$1"
@@ -568,14 +571,16 @@ tv_convert() {
         --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL -- "$1") > "${TV_WORK}/convert.log" 2>&1
 }
 
-# tv_sarif_root FILE ROOT: sets ROOTPATH, the base the SARIF report's file
-# locations are relative to, to ROOT. trivy convert sets it from the JSON
-# report's path for a filesystem or repository scan, where the scan itself
-# would have set the scanned directory.
+# tv_sarif_root FILE [ROOT]: sets ROOTPATH, the base the SARIF report's file
+# locations are relative to, to ROOT, or removes it without ROOT. trivy
+# convert sets it from the JSON report's path for a filesystem or repository
+# scan, where the scan itself would have set the scanned directory; a remote
+# repository has none.
 tv_sarif_root() {
     local tmp="${TV_WORK}/sarif.tmp"
     # shellcheck disable=SC2016 # jq program, not shell
-    jq --arg root "$2" '.runs |= map(.originalUriBaseIds.ROOTPATH = {uri: $root})' "$1" > "${tmp}" && mv -f "${tmp}" "$1"
+    jq --arg root "${2:-}" '.runs |= map(if $root == "" then del(.originalUriBaseIds.ROOTPATH)
+        else .originalUriBaseIds.ROOTPATH = {uri: $root} end)' "$1" > "${tmp}" && mv -f "${tmp}" "$1"
 }
 
 # tv_tool_json PATH VERSION: describes the trivy that ran, for the run record.

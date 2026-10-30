@@ -1,9 +1,11 @@
 name: Log in to a registry with Trivy
 description: >
-  Logs in to an OCI registry with trivy registry login, which checks the
-  credentials with the registry and stores them where Docker does
-  (~/.docker/config.json), so scan can pull private images from it, and later
-  docker, crane or oras commands can use them too. Run logout when the job no
+  Logs in to an OCI registry with trivy registry login, which stores the
+  credentials where Docker does (~/.docker/config.json), so scan can pull
+  private images from it, and later docker, crane or oras commands can use
+  them too. A registry that issues tokens, as most hosted ones do, checks the
+  credentials here; one that uses Basic authentication, such as registry:2,
+  only fails the first scan that uses wrong ones. Run logout when the job no
   longer needs them. The GitHub Actions twin of the orb's login command.
 author: juburr
 

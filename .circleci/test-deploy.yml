@@ -355,8 +355,10 @@ jobs:
       - run:
           name: Start A Registry That Requires A Login, With A Private Image
           command: |
+            # The image is alpine 3.19.0's linux/amd64 manifest: Docker's containerd image store can't push or
+            # save an index it pulled one platform of.
             for image in mirror.gcr.io/library/httpd:2 mirror.gcr.io/library/registry:2 \
-                mirror.gcr.io/library/alpine@sha256:51b67269f354137895d43f3b3d810bfacd3945438e94dc5ac55fdac340352f48; do
+                mirror.gcr.io/library/alpine@sha256:13b7e62e8df80264dbb747995705a986aa530415763a6c58f84a3ca8af9a5bcd; do
               for attempt in 1 2 3; do
                 docker pull "${image}" && break
                 sleep $((attempt * 10))
@@ -372,7 +374,7 @@ jobs:
               [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://${REGISTRY_HOST}/v2/")" == "401" ]] && break
               sleep 1
             done
-            docker tag mirror.gcr.io/library/alpine@sha256:51b67269f354137895d43f3b3d810bfacd3945438e94dc5ac55fdac340352f48 \
+            docker tag mirror.gcr.io/library/alpine@sha256:13b7e62e8df80264dbb747995705a986aa530415763a6c58f84a3ca8af9a5bcd \
               "${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0"
             printf '%s' "${REGISTRY_SECRET}" | docker login "${REGISTRY_HOST}" -u "${REGISTRY_USER}" --password-stdin
             docker push "${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0"

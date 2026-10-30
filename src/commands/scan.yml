@@ -78,7 +78,8 @@ parameters:
       An ignore file of findings to suppress, passed as --ignorefile: a
       .trivyignore (one ID per line) or a .trivyignore.yaml. Leave empty for
       .trivyignore in working_dir, or .trivyignore.yaml when there is no
-      .trivyignore. Suppressed findings are counted in the summary.
+      .trivyignore. Suppressed findings are counted in the summary, except in
+      config scans, whose Trivy command can't report them.
       Environment variables are expanded.
   vex:
     type: string

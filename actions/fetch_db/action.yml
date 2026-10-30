@@ -3,8 +3,7 @@ description: >
   Fetches Trivy's vulnerability database into cache_dir, and on request its
   Java database and misconfiguration checks bundle, and points the job's
   later steps at them through TRIVY_CACHE_DIR. Scans in the same job then use
-  them without updating them, so parallel scans never download over each
-  other. With caching, the databases are restored from and saved to the
+  them without updating them, so no scan downloads them again. With caching, the databases are restored from and saved to the
   Actions cache, so jobs download them only when a newer build exists. Run
   install first. The GitHub Actions twin of the orb's fetch_db command.
 author: juburr

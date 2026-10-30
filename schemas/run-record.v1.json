@@ -111,7 +111,7 @@
         { "type": "null" },
         {
           "type": "object",
-          "required": ["findings", "failing", "vulnerabilities", "misconfigurations", "secrets", "licenses", "packages", "misconfiguration_checks", "suppressed", "os"],
+          "required": ["findings", "failing", "vulnerabilities", "misconfigurations", "secrets", "licenses", "packages", "misconfiguration_checks", "config_files", "suppressed", "os"],
           "properties": {
             "findings": { "description": "Vulnerabilities, failed misconfiguration checks, secrets and licenses.", "type": "integer", "minimum": 0 },
             "failing": { "description": "The findings at or above fail_on.", "type": "integer", "minimum": 0 },
@@ -120,8 +120,9 @@
             "secrets": { "$ref": "#/$defs/by_severity" },
             "licenses": { "$ref": "#/$defs/by_severity" },
             "packages": { "description": "The packages Trivy found.", "type": "integer", "minimum": 0 },
-            "misconfiguration_checks": { "description": "Misconfiguration checks that passed or failed.", "type": "integer", "minimum": 0 },
-            "suppressed": { "description": "Findings an ignore file, an ignore policy or VEX suppressed.", "type": "integer", "minimum": 0 },
+            "misconfiguration_checks": { "description": "Misconfiguration checks that passed or failed, among those severity and ignore filters left.", "type": "integer", "minimum": 0 },
+            "config_files": { "description": "Configuration files Trivy checked for misconfigurations.", "type": "integer", "minimum": 0 },
+            "suppressed": { "description": "Findings an ignore file, an ignore policy or VEX suppressed. Always 0 for target_type config, whose Trivy command can't report them.", "type": "integer", "minimum": 0 },
             "os": { "type": ["object", "null"] }
           }
         }

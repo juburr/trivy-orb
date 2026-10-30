@@ -29,6 +29,28 @@ set -euo pipefail
 # Security's advisories for it.
 TRIVY_MIN_RELEASE_AGE_DAYS=${TRIVY_MIN_RELEASE_AGE_DAYS:-7}
 
+# The releases install.sh never installs are refused here, before anything is
+# downloaded: the shared logic below downloads each asset before it calls
+# verify_upstream. trivy_compromised comes from install.sh's tool definition.
+# shellcheck source=/dev/null
+source <(sed -n '/^# >>> tool definition >>>$/,/^# <<< tool definition <<<$/p' \
+    "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install.sh")
+if [[ $# -gt 0 ]]; then
+    trivy_args=("$@")
+    for ((i = 0; i < ${#trivy_args[@]}; i++)); do
+        case "${trivy_args[i]}" in
+            -v) trivy_requested=${trivy_args[i + 1]:-} ;;
+            -v?*) trivy_requested=${trivy_args[i]#-v} ;;
+            *) continue ;;
+        esac
+        if trivy_compromised "${trivy_requested}"; then
+            printf 'ERROR: Trivy %s was published by an attacker (GHSA-69fq-xp46-6x23); it never goes in the table.\n' \
+                "${trivy_requested#v}" >&2
+            exit 1
+        fi
+    done
+fi
+
 # trivy_release_repository VERSION: the repository whose release workflow
 # signed VERSION. 0.69.2 was released on 2026-03-01 from
 # aquasecurity/private-trivy, which its signing certificate names; Aqua

@@ -7,8 +7,9 @@
 # restored is used as it is while it is current.
 #
 # Exports TRIVY_CACHE_DIR, which every later trivy reads, and TRIVY_ORB_*_DIR,
-# which tell scan to skip updating what was fetched here, so scans that run
-# in parallel never download over each other. Repositories given here are
+# which tell scan to skip updating what was fetched here, so later scans in
+# the job never download the databases again, nor replace them while another
+# trivy may be reading them. Repositories given here are
 # exported too (TRIVY_DB_REPOSITORY, ...), so later scans that do update use
 # the same mirror.
 
@@ -43,6 +44,7 @@ if [[ "${CHECKS_BUNDLE_REPOSITORY}" == *,* ]]; then
     exit 2
 fi
 tv_uint max_db_age_days "${MAX_DB_AGE_DAYS}"
+MAX_DB_AGE_DAYS=$((10#${MAX_DB_AGE_DAYS}))
 if [[ -n "${TIMEOUT}" ]] && ! tv_match "${TIMEOUT}" '^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$'; then
     echo "ERROR: timeout must be a duration such as 10m or 1h30m, not '${TIMEOUT}'." >&2
     exit 2
@@ -66,7 +68,9 @@ fi
 # fetch WHAT ARG...: runs trivy ARG... until it succeeds, three times at
 # most: a registry that limits the rate of pulls, or fails for a moment,
 # often works a little later. A run whose log shows it fell back to the
-# checks built into trivy failed to fetch the checks bundle.
+# checks built into trivy failed to fetch the checks bundle. A job's
+# TRIVY_SERVER would make trivy a client of that server, which fetches
+# nothing, so it is left out.
 fetch() {
     local what=$1 attempt status
     shift
@@ -76,7 +80,7 @@ fetch() {
         printf ' %q' "$@"
         printf '\n'
         status=0
-        "${TV_TRIVY}" "$@" 2>&1 | tee "${TV_WORK}/fetch.log" || status=$?
+        env -u TRIVY_SERVER "${TV_TRIVY}" "$@" 2>&1 | tee "${TV_WORK}/fetch.log" || status=$?
         if [[ "${status}" -eq 0 ]] && ! grep -q 'Falling back to embedded checks' "${TV_WORK}/fetch.log"; then
             return 0
         fi
@@ -89,13 +93,19 @@ fetch() {
     return 1
 }
 
-DB_ARGS=(--cache-dir "${TV_CACHE_DIR}" --no-progress --scanners vuln ${TIMEOUT_ARGS[@]+"${TIMEOUT_ARGS[@]}"})
+# The options a job's TRIVY_* variables or a trivy.yaml could turn against
+# the fetch are set: TRIVY_SKIP_DB_UPDATE=true would make trivy refuse
+# --download-db-only, and TRIVY_QUIET would hide the fallback to the checks
+# built into trivy.
+DB_ARGS=(--cache-dir "${TV_CACHE_DIR}" --no-progress --quiet=false --scanners vuln --skip-db-update=false
+    ${TIMEOUT_ARGS[@]+"${TIMEOUT_ARGS[@]}"})
 if [[ -n "${DB_REPOSITORY}" ]]; then
     DB_ARGS+=("--db-repository=${DB_REPOSITORY}")
 fi
 fetch "vulnerability database" image --download-db-only "${DB_ARGS[@]}"
 if [[ "${JAVA_DB}" == true ]]; then
-    DB_ARGS=(--cache-dir "${TV_CACHE_DIR}" --no-progress --scanners vuln ${TIMEOUT_ARGS[@]+"${TIMEOUT_ARGS[@]}"})
+    DB_ARGS=(--cache-dir "${TV_CACHE_DIR}" --no-progress --quiet=false --scanners vuln --skip-java-db-update=false
+        ${TIMEOUT_ARGS[@]+"${TIMEOUT_ARGS[@]}"})
     if [[ -n "${JAVA_DB_REPOSITORY}" ]]; then
         DB_ARGS+=("--java-db-repository=${JAVA_DB_REPOSITORY}")
     fi
@@ -105,8 +115,8 @@ if [[ "${CHECKS_BUNDLE}" == true ]]; then
     # Trivy has no option to fetch only the checks bundle: a configuration
     # scan of an empty directory fetches it, and checks nothing.
     mkdir "${TV_WORK}/empty"
-    CHECKS_ARGS=(--cache-dir "${TV_CACHE_DIR}" --skip-version-check --disable-telemetry --exit-code 0 --format json
-        --output "${TV_WORK}/checks.json" ${TIMEOUT_ARGS[@]+"${TIMEOUT_ARGS[@]}"})
+    CHECKS_ARGS=(--cache-dir "${TV_CACHE_DIR}" --quiet=false --skip-check-update=false --skip-version-check
+        --disable-telemetry --exit-code 0 --format json --output "${TV_WORK}/checks.json" ${TIMEOUT_ARGS[@]+"${TIMEOUT_ARGS[@]}"})
     if [[ -n "${CHECKS_BUNDLE_REPOSITORY}" ]]; then
         CHECKS_ARGS+=("--checks-bundle-repository=${CHECKS_BUNDLE_REPOSITORY}")
     fi

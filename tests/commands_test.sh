@@ -249,6 +249,9 @@ rc_is() { [[ "${RC}" -eq "$1" ]]; }
 failed() { [[ "${RC}" -ne 0 ]]; }
 said() { grep -qF -- "$1" <<< "${OUTPUT}"; }
 not_said() { ! said "$1"; }
+# script_lacks TEXT: the script's output lacks TEXT; run_command.sh's own
+# first line, which echoes the parameters, is left out.
+script_lacks() { ! grep -v '^Running scripts/' <<< "${OUTPUT}" | grep -qF -- "$1"; }
 trivy_not_run() { [[ -z "$(find "${STUB}/calls" -name '*.args')" ]]; }
 # the_scan: the arguments of the scan call (the one with --format json and
 # --output, not a version or convert call).
@@ -330,6 +333,7 @@ check "without telemetry or the version check" scan_has --exit-code 0 --skip-ver
 check "listing every package and the suppressed findings, without progress bars" \
     scan_has --list-all-pkgs --show-suppressed --no-progress
 check "and the image last, after --" scan_ends_with registry.example/app:1.0
+check "never failing on an end-of-life OS itself" scan_has --exit-on-eol 0
 check "updates the databases by default" scan_lacks --skip-db-update
 check "passes no severity, so every one is reported" scan_lacks --severity
 check "says it passed" said "Passed: Trivy found nothing at or above HIGH in registry.example/clean:1.0."
@@ -377,6 +381,7 @@ for flag in --list-all-pkgs --show-suppressed --no-progress --skip-db-update --s
     check "without ${flag}, which trivy config doesn't take" scan_lacks "${flag}"
 done
 check "needs no vulnerability database" not_said "Vulnerability database: built"
+check "and passes no --exit-on-eol, which trivy config doesn't take" scan_lacks --exit-on-eol
 
 scan target_type=sbom target=bom.json -- STUB_REPORT="${FIXTURES}/clean.json"
 check "an sbom scan runs trivy sbom" scan_first sbom
@@ -469,6 +474,8 @@ check "a secret scan that found nothing passes" rc_is 0
 scan target_type=config target=. -- STUB_REPORT="${FIXTURES}/config-empty.json"
 check "a config scan that found nothing to check fails" rc_is 1
 check "saying so" said "Trivy found no infrastructure as code to check"
+scan target_type=config target=. severity=CRITICAL -- STUB_REPORT="${FIXTURES}/config-filtered.json"
+check "but not one whose checks severity left out of the report" rc_is 0
 
 make_db "${CACHE}" 10
 scan target=registry.example/app:1.0 report_only=true -- STUB_REPORT="${FIXTURES}/clean.json"
@@ -478,6 +485,9 @@ scan target=registry.example/app:1.0 max_db_age_days=0 -- STUB_REPORT="${FIXTURE
 check "max_db_age_days 0 accepts it" rc_is 0
 scan target=registry.example/app:1.0 max_db_age_days=30 -- STUB_REPORT="${FIXTURES}/clean.json"
 check "and a larger limit" rc_is 0
+scan target=registry.example/app:1.0 max_db_age_days=011 run_record=true -- STUB_REPORT="${FIXTURES}/clean.json"
+check "a limit with a leading zero is read as decimal, not octal" rc_is 0
+check "in the run record too" json_is trivy.run-record.json .gate.max_db_age_days 11
 make_db "${CACHE}"
 scan target=registry.example/app:1.0 cache_dir="${WORK}/empty-cache" -- STUB_REPORT="${FIXTURES}/clean.json"
 check "a cache_dir without a vulnerability database fails a vulnerability scan" rc_is 1
@@ -485,6 +495,14 @@ check "saying there is none" said "There is no vulnerability database in ${WORK}
 
 scan target_type=config target=. scanners="" -- STUB_REPORT="${FIXTURES}/config.json" STUB_LOG_LINE="ERROR Falling back to embedded checks"
 check "a fallback to the checks built into trivy is a warning" said "WARN: Trivy couldn't use its checks bundle"
+
+scan target_type=repository target=https://robot:s3cret@git.example/org/app.git run_record=true \
+    -- STUB_REPORT="${FIXTURES}/filesystem.json"
+check "a remote repository is scanned from its URL" scan_ends_with https://robot:s3cret@git.example/org/app.git
+check "whose credentials stay out of the log" script_lacks "s3cret"
+check "and out of the run record" json_is trivy.run-record.json '.target.target' '"https://git.example/org/app.git"'
+check "and SARIF has no ROOTPATH, as there is no local directory" \
+    json_is trivy.sarif '.runs[0].originalUriBaseIds.ROOTPATH' null
 
 echo "=== scan: databases and offline"
 scan target=registry.example/app:1.0 -- STUB_REPORT="${FIXTURES}/clean.json" TRIVY_ORB_DB_DIR="${CACHE}"

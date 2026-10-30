@@ -155,6 +155,7 @@ if [[ -n "${SEVERITY}" ]]; then
     fi
 fi
 tv_uint max_db_age_days "${MAX_DB_AGE_DAYS}"
+MAX_DB_AGE_DAYS=$((10#${MAX_DB_AGE_DAYS}))
 if [[ -n "${TIMEOUT}" ]] && ! tv_match "${TIMEOUT}" '^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$'; then
     usage "timeout must be a duration such as 10m or 1h30m, not '${TIMEOUT}'."
 fi
@@ -259,8 +260,8 @@ if [[ -n "${TIMEOUT}" ]]; then
     TV_ARGS+=("--timeout=${TIMEOUT}")
 fi
 # Updates are skipped for what fetch_db fetched into this cache directory in
-# this job, so parallel scans never download over each other, and for
-# everything when offline.
+# this job, so a scan never downloads it again or replaces it under another
+# trivy reading it, and for everything when offline.
 SKIP_DB=false
 SKIP_JAVA_DB=false
 SKIP_CHECKS=false
@@ -289,12 +290,24 @@ COMMAND=("${TV_TRIVY}" "${TV_ARGS[@]}" --cache-dir "${TV_CACHE_DIR}" --format js
 if [[ "${NOT_CONFIG}" == true ]]; then
     COMMAND+=(--list-all-pkgs --show-suppressed --no-progress)
 fi
+# Trivy checks --exit-on-eol before --exit-code, so a job's TRIVY_EXIT_ON_EOL
+# would turn an end-of-life OS into a failed scan. The commands that take it:
+case "${TARGET_TYPE}" in
+    image | rootfs | sbom) COMMAND+=(--exit-on-eol 0) ;;
+esac
 if [[ -n "${TARGET}" ]]; then
     COMMAND+=(-- "${TARGET}")
 fi
 
+# A repository URL can hold credentials, which the log and the reports leave
+# out.
+PUBLIC_TARGET=${TARGET}
+if [[ "${TARGET}" == *://* ]]; then
+    PUBLIC_TARGET=$(tv_url_public "${TARGET}")
+fi
+
 # TV_TARGET_JSON: what was asked for, then what Trivy says it scanned.
-TV_TARGET_JSON=$(jq -cn --arg type "${TARGET_TYPE}" --arg target "${TARGET}" --arg input "${INPUT}" \
+TV_TARGET_JSON=$(jq -cn --arg type "${TARGET_TYPE}" --arg target "${PUBLIC_TARGET}" --arg input "${INPUT}" \
     '{type: $type, target: (if $target == "" then null else $target end), input: (if $input == "" then null else $input end)}')
 # shellcheck disable=SC2034 # read by tv_run_record
 TV_GATE_JSON=$(jq -cn --arg fail_on "${FAIL_LABEL}" --argjson report_only "${REPORT_ONLY}" --argjson eol "${FAIL_ON_EOL}" \
@@ -320,7 +333,12 @@ error() {
 }
 
 printf 'Running: trivy'
-printf ' %q' "${COMMAND[@]:1}"
+for word in "${COMMAND[@]:1}"; do
+    if [[ -n "${TARGET}" && "${word}" == "${TARGET}" ]]; then
+        word=${PUBLIC_TARGET}
+    fi
+    printf ' %q' "${word}"
+done
 printf '\n'
 STATUS=0
 "${COMMAND[@]}" 2>&1 | tee "${TV_WORK}/trivy.log" || STATUS=$?
@@ -330,12 +348,15 @@ fi
 if ! tv_json_is "${REPORT}" '.SchemaVersion == 2'; then
     error "Trivy wrote no JSON report this command can read (SchemaVersion 2)."
 fi
-TV_TARGET_JSON=$(jq -c --slurpfile r "${REPORT}" '. + {
-        artifact_name: ($r[0].ArtifactName // null), artifact_type: ($r[0].ArtifactType // null),
+TV_TARGET_JSON=$(jq -c --slurpfile r "${REPORT}" --arg public "${PUBLIC_TARGET}" --arg target "${TARGET}" '. + {
+        artifact_name: (($r[0].ArtifactName // null) | if . != null and $target != "" and . == $target then $public else . end),
+        artifact_type: ($r[0].ArtifactType // null),
         artifact_id: (if ($r[0].ArtifactID // "") == "" then null else $r[0].ArtifactID end),
         repo_digests: ($r[0].Metadata.RepoDigests // []), os: ($r[0].Metadata.OS // null)}' <<< "${TV_TARGET_JSON}")
 ARTIFACT=$(jq -r '.ArtifactName // ""' "${REPORT}")
-ARTIFACT=${ARTIFACT:-${TARGET:-${INPUT}}}
+if [[ -z "${ARTIFACT}" || ( -n "${TARGET}" && "${ARTIFACT}" == "${TARGET}" ) ]]; then
+    ARTIFACT=${PUBLIC_TARGET:-${INPUT}}
+fi
 
 # --- The databases it used ---
 tv_db_metadata
@@ -358,7 +379,7 @@ if [[ "${ALLOW_EMPTY}" != true ]]; then
             "An image scan reads OS packages and installed artifacts; a filesystem or repository scan reads lockfiles" \
             "such as package-lock.json or go.mod. Check target and target_type, or set allow_empty to true."
     fi
-    if [[ "${ENABLED}" == " misconfig " && "$(count '.misconfiguration_checks')" -eq 0 && "$(count '.findings')" -eq 0 ]]; then
+    if [[ "${ENABLED}" == " misconfig " && "$(count '.config_files')" -eq 0 ]]; then
         error "Trivy found no infrastructure as code to check for misconfigurations in ${ARTIFACT}, so the scan checked nothing." \
             "Check target, or set allow_empty to true."
     fi
@@ -393,8 +414,12 @@ for format in ${FORMATS[@]+"${FORMATS[@]}"}; do
     TV_REPORTS+=("${file}")
     if [[ "${format}" == sarif ]]; then
         ARTIFACT_TYPE=$(jq -r '.ArtifactType // ""' "${REPORT}")
-        if [[ ("${ARTIFACT_TYPE}" == filesystem || "${ARTIFACT_TYPE}" == repository) && -d "${TARGET}" ]]; then
-            tv_sarif_root "${file}" "file://$(cd "${TARGET}" && pwd)/"
+        if [[ "${ARTIFACT_TYPE}" == filesystem || "${ARTIFACT_TYPE}" == repository ]]; then
+            if [[ -d "${TARGET}" ]]; then
+                tv_sarif_root "${file}" "file://$(cd "${TARGET}" && pwd)/"
+            else
+                tv_sarif_root "${file}"
+            fi
         fi
     fi
 done

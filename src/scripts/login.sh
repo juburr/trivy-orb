@@ -1,9 +1,11 @@
 #!/bin/bash
 #
 # Logs in to a registry for the login command, with trivy registry login,
-# which checks the credentials with the registry and stores them where Docker
-# does (~/.docker/config.json, or $DOCKER_CONFIG/config.json), so later scans
-# of the registry's images, and docker, crane or oras, use them too.
+# which stores the credentials where Docker does (~/.docker/config.json, or
+# $DOCKER_CONFIG/config.json), so later scans of the registry's images, and
+# docker, crane or oras, use them too. A registry that issues tokens checks
+# them first; one that uses Basic authentication, such as registry:2 with
+# htpasswd, isn't sent them until a scan, so wrong ones fail that scan.
 
 set -euo pipefail
 # A job can turn xtrace on for every step (SHELLOPTS, or set -x in $BASH_ENV), and it would print the password.

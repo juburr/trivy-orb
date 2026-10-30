@@ -1,8 +1,8 @@
 description: >
-  Scan an image in a private registry: login checks the credentials from
-  two context variables with the registry and stores them where Trivy and
-  Docker read them, scan pulls the image itself (no Docker daemon needed),
-  and logout removes the credentials. Every finding at or above CRITICAL
+  Scan an image in a private registry: login stores the credentials from two
+  context variables where Trivy and Docker read them (a registry that issues
+  tokens checks them first), scan pulls the image itself (no Docker daemon
+  needed), and logout removes the credentials. Every finding at or above CRITICAL
   fails the job, and an end-of-life base image does too.
 
 usage:

@@ -50,7 +50,7 @@ Trivy scans once into JSON; SARIF, a table, CycloneDX and SPDX SBOMs and a GitHu
 <tr>
 <td width="33%" valign="top">
 🗄️ <b>Databases that keep up</b><br><br>
-<code>fetch_db</code> caches the vulnerability database between jobs, keyed by its build, so jobs download it only when a newer one is out, and scans in parallel never download over each other. Point it at your own mirror with <code>db_repository</code>.
+<code>fetch_db</code> caches the vulnerability database between jobs, keyed by its build, so jobs download it only when a newer one is out, and the scans after it never download it again. Point it at your own mirror with <code>db_repository</code>.
 </td>
 <td width="33%" valign="top">
 ✈️ <b>Offline and air-gapped</b><br><br>
@@ -58,7 +58,7 @@ Fetch the databases and checks bundle once, pass them through the workspace, and
 </td>
 <td width="33%" valign="top">
 🔑 <b>Private registries</b><br><br>
-<code>login</code> checks the credentials with the registry and stores them where Trivy and Docker read them, the password only ever on stdin; <code>logout</code> removes them. Images are pulled straight from the registry, so no Docker daemon is needed.
+<code>login</code> stores the credentials where Trivy and Docker read them, the password only ever on stdin, and a registry that issues tokens checks them right away; <code>logout</code> removes them. Images are pulled straight from the registry, so no Docker daemon is needed.
 </td>
 </tr>
 </table>
@@ -189,7 +189,7 @@ A `.trivyignore` in `working_dir` (one ID per line, `# comments` and `exp:2026-1
     vex: vex/my-app.openvex.json
 ```
 
-Suppressed findings are counted in the summary and the run record, so they never disappear without a trace.
+Suppressed findings are counted in the summary and the run record, so they never disappear without a trace. The exception is `target_type: config`, whose Trivy command can't report them; `target_type: filesystem` with `scanners: misconfig` checks the same files and does.
 
 ### Scan the Checkout: Dependencies, Secrets and Infrastructure as Code
 
