@@ -1,0 +1,9 @@
+{
+  "name": "trivy-orb-clean-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Depends on a package no advisory names, for trivy-orb's tests. Never installed.",
+  "dependencies": {
+    "trivy-orb-fixture-dependency": "1.0.0"
+  }
+}

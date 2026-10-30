@@ -1,0 +1,147 @@
+name: Fetch Trivy's databases
+description: >
+  Fetches Trivy's vulnerability database into cache_dir, and on request its
+  Java database and misconfiguration checks bundle, and points the job's
+  later steps at them through TRIVY_CACHE_DIR. Scans in the same job then use
+  them without updating them, so no scan downloads them again. With caching, the databases are restored from and saved to the
+  Actions cache, so jobs download them only when a newer build exists. Run
+  install first. The GitHub Actions twin of the orb's fetch_db command.
+author: juburr
+
+inputs:
+  cache_dir:
+    description: >
+      Trivy's cache directory, to fetch the databases into. A leading ~ is expanded
+      to $HOME, and a relative path is resolved against the working directory. It is
+      exported as TRIVY_CACHE_DIR, which later trivy commands read. With caching,
+      this directory is restored and saved as given.
+    default: "~/.cache/trivy"
+  java_db:
+    description: >
+      Also fetch the Java database, which Trivy needs to identify JAR, WAR and EAR
+      files in images and root filesystems. It is large, so it is only fetched when
+      asked for; otherwise a scan that finds a JAR fetches it then.
+    default: "false"
+  checks_bundle:
+    description: >
+      Also fetch the misconfiguration checks bundle, for offline misconfiguration
+      scans. Online, scans fetch it themselves.
+    default: "false"
+  db_repository:
+    description: >
+      The vulnerability database's OCI repositories, tried in order and separated by
+      commas, such as a mirror of mirror.gcr.io/aquasec/trivy-db:2 in Artifactory or
+      Harbor, passed as --db-repository and exported as TRIVY_DB_REPOSITORY for
+      later scans. Leave empty for Trivy's defaults,
+      mirror.gcr.io/aquasec/trivy-db:2 then ghcr.io/aquasecurity/trivy-db:2.
+    default: ""
+  java_db_repository:
+    description: >
+      The Java database's OCI repositories, as db_repository, passed as
+      --java-db-repository and exported as TRIVY_JAVA_DB_REPOSITORY. Leave empty for
+      Trivy's defaults, mirror.gcr.io/aquasec/trivy-java-db:1 then
+      ghcr.io/aquasecurity/trivy-java-db:1.
+    default: ""
+  checks_bundle_repository:
+    description: >
+      The checks bundle's OCI repository, passed as --checks-bundle-repository and
+      exported as TRIVY_CHECKS_BUNDLE_REPOSITORY. Leave empty for Trivy's default,
+      mirror.gcr.io/aquasec/trivy-checks:2.
+    default: ""
+  max_db_age_days:
+    description: >
+      Fail when the vulnerability database is more than this many days old after
+      fetching, as one from a stalled mirror can be. 0 means no limit.
+    default: "7"
+  timeout:
+    description: >
+      How long each download may take, such as 15m, passed as --timeout. Leave empty
+      for Trivy's 5m.
+    default: ""
+  caching:
+    description: >
+      Cache the databases between jobs. Jobs reuse the cached databases until a
+      newer build is published, and the first job to download it caches it for the
+      rest, so a slow or rate-limited registry is hit less. The vulnerability
+      database takes roughly 100 MiB of cache storage per build saved, and the Java
+      database several hundred more.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # As in the orb, the databases are saved under a key naming them and
+    # their build date, and the newest databases built today, then on the two
+    # days before, then any are restored (see src/scripts/db_cache_key.sh).
+    # The keys hash the files that script writes, as CircleCI's {{ checksum }}
+    # does.
+    - name: Prepare Trivy database cache location
+      id: location
+      if: inputs.caching == 'true' || inputs.caching == '1'
+      shell: bash
+      env:
+        ORB_DB_CACHE_KEY_PART: location
+        ORB_DB_CACHE_KEY_PREFIX: ${{ runner.temp }}/trivy-orb-db-cache
+        PARAM_CACHE_DIR: ${{ inputs.cache_dir }}
+        PARAM_CHECKS_BUNDLE: ${{ inputs.checks_bundle }}
+        PARAM_CHECKS_BUNDLE_REPOSITORY: ${{ inputs.checks_bundle_repository }}
+        PARAM_DB_REPOSITORY: ${{ inputs.db_repository }}
+        PARAM_JAVA_DB: ${{ inputs.java_db }}
+        PARAM_JAVA_DB_REPOSITORY: ${{ inputs.java_db_repository }}
+      run: |
+        bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/db_cache_key.sh" \
+          "SCRIPT_TRIVY_LIB=${GITHUB_ACTION_PATH}/../../src/scripts/lib/trivy.sh"
+        hash() { sha256sum < "${ORB_DB_CACHE_KEY_PREFIX}-$1" | cut -c1-64; }
+        prefix="trivy-orb-db-v1-$(hash location)-"
+        delimiter="ghadelimiter_$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+        {
+          printf 'prefix=%s\n' "${prefix}"
+          printf 'key=%s%s-\n' "${prefix}" "$(hash day0)"
+          printf 'restore-keys<<%s\n' "${delimiter}"
+          printf '%s%s-\n' "${prefix}" "$(hash day0)" "${prefix}" "$(hash day1)" "${prefix}" "$(hash day2)"
+          printf '%s\n' "${prefix}" "${delimiter}"
+        } >> "${GITHUB_OUTPUT}"
+    - name: Restore the Trivy database cache
+      id: restore
+      if: inputs.caching == 'true' || inputs.caching == '1'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ inputs.cache_dir }}
+        key: ${{ steps.location.outputs.key }}
+        restore-keys: ${{ steps.location.outputs.restore-keys }}
+    - name: Fetch Trivy databases
+      shell: bash
+      env:
+        PARAM_CACHE_DIR: ${{ inputs.cache_dir }}
+        PARAM_CHECKS_BUNDLE: ${{ inputs.checks_bundle }}
+        PARAM_CHECKS_BUNDLE_REPOSITORY: ${{ inputs.checks_bundle_repository }}
+        PARAM_DB_REPOSITORY: ${{ inputs.db_repository }}
+        PARAM_JAVA_DB: ${{ inputs.java_db }}
+        PARAM_JAVA_DB_REPOSITORY: ${{ inputs.java_db_repository }}
+        PARAM_MAX_DB_AGE_DAYS: ${{ inputs.max_db_age_days }}
+        PARAM_TIMEOUT: ${{ inputs.timeout }}
+      run: >-
+        bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/fetch_db.sh"
+        "SCRIPT_TRIVY_LIB=${GITHUB_ACTION_PATH}/../../src/scripts/lib/trivy.sh"
+    - name: Prepare Trivy database cache key
+      id: database
+      if: inputs.caching == 'true' || inputs.caching == '1'
+      shell: bash
+      env:
+        ORB_DB_CACHE_KEY_PART: database
+        ORB_DB_CACHE_KEY_PREFIX: ${{ runner.temp }}/trivy-orb-db-cache
+        PARAM_CACHE_DIR: ${{ inputs.cache_dir }}
+        PREFIX: ${{ steps.location.outputs.prefix }}
+      run: |
+        bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/db_cache_key.sh" \
+          "SCRIPT_TRIVY_LIB=${GITHUB_ACTION_PATH}/../../src/scripts/lib/trivy.sh"
+        hash() { sha256sum < "${ORB_DB_CACHE_KEY_PREFIX}-$1" | cut -c1-64; }
+        printf 'key=%s%s-%s\n' "${PREFIX}" "$(hash built)" "$(hash database)" >> "${GITHUB_OUTPUT}"
+    # A saved cache can't be replaced, so a job that restored the databases it
+    # ended up with saves nothing.
+    - name: Save the Trivy database cache
+      if: (inputs.caching == 'true' || inputs.caching == '1') && steps.restore.outputs.cache-matched-key != steps.database.outputs.key
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ inputs.cache_dir }}
+        key: ${{ steps.database.outputs.key }}

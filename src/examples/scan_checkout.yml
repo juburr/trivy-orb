@@ -1,0 +1,31 @@
+description: >
+  Scan the checkout on every commit: the lockfiles for vulnerable
+  dependencies, the files for secrets, and the Dockerfiles, Kubernetes
+  manifests and Terraform for misconfigurations, with a CycloneDX SBOM of
+  the dependencies. report_only reports the findings without failing the
+  job, to adopt the check gradually; a .trivyignore in the repository
+  suppresses accepted findings.
+
+usage:
+  version: 2.1
+  orbs:
+    trivy: juburr/trivy-orb@0.1.0
+  jobs:
+    scan:
+      docker:
+        - image: cimg/base:current
+      steps:
+        - checkout
+        - trivy/install
+        - trivy/fetch_db
+        - trivy/scan:
+            target_type: filesystem
+            target: .
+            scanners: vuln secret misconfig
+            skip_dirs: node_modules
+            formats: sarif table cyclonedx
+            report_only: true
+  workflows:
+    scan:
+      jobs:
+        - scan

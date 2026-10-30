@@ -1,0 +1,12 @@
+# For trivy-orb's misconfiguration tests: a privileged container. Never
+# applied.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: trivy-orb-fixture
+spec:
+  containers:
+    - name: app
+      image: alpine:3.20
+      securityContext:
+        privileged: true

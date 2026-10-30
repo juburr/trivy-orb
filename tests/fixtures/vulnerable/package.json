@@ -1,0 +1,9 @@
+{
+  "name": "trivy-orb-vulnerable-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pins lodash 4.17.15, which has known vulnerabilities, for trivy-orb's tests. Never installed.",
+  "dependencies": {
+    "lodash": "4.17.15"
+  }
+}

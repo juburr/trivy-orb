@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/juburr/trivy-orb/blob/main/schemas/run-record.v1.json",
+  "title": "trivy-orb run record, version 1",
+  "description": "What one trivy-orb scan ran, on what, with which Trivy and databases, and what it found: written as <report_name>.run-record.json when the scan command's run_record parameter is true. Fields are only ever added within version 1; a change that would break a reader gets a new schema URL.",
+  "type": "object",
+  "required": [
+    "schema", "command", "outcome", "exit_code", "started_at", "finished_at", "ci", "working_directory",
+    "tool", "arguments", "target", "databases", "gate", "counts", "reports"
+  ],
+  "properties": {
+    "schema": {
+      "const": "https://github.com/juburr/trivy-orb/blob/main/schemas/run-record.v1.json"
+    },
+    "command": {
+      "description": "The orb command that wrote the record.",
+      "enum": ["scan"]
+    },
+    "outcome": {
+      "description": "passed: no findings at or above fail_on. findings: findings failed the step. findings-reported: findings, passed because report_only is true. error: the scan did not complete, its database was stale, or it checked nothing, so there is no verdict, and the step failed.",
+      "enum": ["passed", "findings", "findings-reported", "error"]
+    },
+    "exit_code": {
+      "description": "1 when the outcome is error, else 0. The step's own exit code also depends on report_only.",
+      "type": "integer"
+    },
+    "started_at": { "$ref": "#/$defs/timestamp" },
+    "finished_at": { "$ref": "#/$defs/timestamp" },
+    "ci": {
+      "description": "The CI job the command ran in: a CircleCI job (from CIRCLE_BUILD_URL, CIRCLE_SHA1, CIRCLE_JOB and the project), or a GitHub Actions run (from GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, GITHUB_SHA and GITHUB_JOB); null elsewhere.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["provider", "build_url", "sha1", "job", "repository"],
+          "properties": {
+            "provider": { "enum": ["circleci", "github-actions"] },
+            "build_url": { "type": "string" },
+            "sha1": { "type": "string" },
+            "job": { "type": "string" },
+            "repository": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "working_directory": {
+      "description": "The absolute directory the command ran in. Relative paths in arguments and target are relative to it.",
+      "type": "string"
+    },
+    "tool": {
+      "description": "The trivy that ran, with its SHA-512; null when it was not found.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["name", "path", "version", "sha512"],
+          "properties": {
+            "name": { "const": "trivy" },
+            "path": { "type": "string" },
+            "version": { "description": "What trivy --version reports, without a leading v.", "type": "string" },
+            "sha512": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha512" }] }
+          }
+        }
+      ]
+    },
+    "arguments": {
+      "description": "The Trivy command and the options that decide what it scanned and reported, such as image, --scanners and --severity; without the options the command adds to write its JSON report and to read its databases (--format, --output, --exit-code, --cache-dir, --list-all-pkgs, --show-suppressed, --no-progress, --skip-version-check, --disable-telemetry), and without the target, which is in target. URLs lose their userinfo, query and fragment.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "target": {
+      "description": "What was asked for (type, target, input), then, once Trivy wrote its report, what it says it scanned.",
+      "type": "object",
+      "required": ["type", "target", "input"],
+      "properties": {
+        "type": { "enum": ["image", "filesystem", "rootfs", "repository", "config", "sbom"] },
+        "target": { "type": ["string", "null"] },
+        "input": { "type": ["string", "null"] },
+        "artifact_name": { "type": ["string", "null"] },
+        "artifact_type": { "description": "Trivy's ArtifactType, such as container_image, filesystem or repository.", "type": ["string", "null"] },
+        "artifact_id": { "description": "Trivy's ArtifactID, such as an image's or a commit's sha256; null when Trivy gives none.", "type": ["string", "null"] },
+        "repo_digests": { "description": "An image's references by digest.", "type": "array", "items": { "type": "string" } },
+        "os": { "description": "The OS Trivy detected, as its Metadata.OS: Family, Name, and EOSL when it is end of life.", "type": ["object", "null"] }
+      }
+    },
+    "databases": {
+      "description": "trivy version --format json for the cache directory it scanned with: Version, and VulnerabilityDB, JavaDB and CheckBundle when they were there. For a client of a Trivy server, the server's account of itself from the report's Trivy.Server, with Server true. null when the scan ended before it was read.",
+      "type": ["object", "null"],
+      "properties": {
+        "Server": { "description": "true when Trivy scanned as a client of a Trivy server, whose databases these are.", "const": true },
+        "Version": { "type": "string" },
+        "VulnerabilityDB": { "$ref": "#/$defs/database" },
+        "JavaDB": { "$ref": "#/$defs/database" },
+        "CheckBundle": { "type": "object" }
+      }
+    },
+    "gate": {
+      "description": "The settings the verdict follows.",
+      "type": "object",
+      "required": ["fail_on", "fail_on_eol", "report_only", "allow_empty", "max_db_age_days"],
+      "properties": {
+        "fail_on": { "enum": ["UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+        "fail_on_eol": { "type": "boolean" },
+        "report_only": { "type": "boolean" },
+        "allow_empty": { "type": "boolean" },
+        "max_db_age_days": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "counts": {
+      "description": "What the report holds after Trivy's filters; null when there is no report.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["findings", "failing", "vulnerabilities", "misconfigurations", "secrets", "licenses", "packages", "misconfiguration_checks", "config_files", "suppressed", "os"],
+          "properties": {
+            "findings": { "description": "Vulnerabilities, failed misconfiguration checks, secrets and licenses.", "type": "integer", "minimum": 0 },
+            "failing": { "description": "The findings at or above fail_on.", "type": "integer", "minimum": 0 },
+            "vulnerabilities": { "$ref": "#/$defs/by_severity" },
+            "misconfigurations": { "$ref": "#/$defs/by_severity" },
+            "secrets": { "$ref": "#/$defs/by_severity" },
+            "licenses": { "$ref": "#/$defs/by_severity" },
+            "packages": { "description": "The packages Trivy found.", "type": "integer", "minimum": 0 },
+            "misconfiguration_checks": { "description": "Misconfiguration checks that passed or failed, among those severity and ignore filters left.", "type": "integer", "minimum": 0 },
+            "config_files": { "description": "Configuration files Trivy checked for misconfigurations.", "type": "integer", "minimum": 0 },
+            "suppressed": { "description": "Findings an ignore file, an ignore policy or VEX suppressed. Always 0 for target_type config, whose Trivy command can't report them.", "type": "integer", "minimum": 0 },
+            "os": { "type": ["object", "null"] }
+          }
+        }
+      ]
+    },
+    "reports": {
+      "description": "The report files written before the record, with their SHA-256.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": { "type": "string" },
+          "sha256": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sha512": { "type": "string", "pattern": "^[0-9a-f]{128}$" },
+    "database": {
+      "description": "A database's metadata.json, as trivy version reports it.",
+      "type": "object",
+      "properties": {
+        "Version": { "type": "integer" },
+        "NextUpdate": { "type": "string" },
+        "UpdatedAt": { "type": "string" },
+        "DownloadedAt": { "type": "string" }
+      }
+    },
+    "by_severity": {
+      "description": "A count per severity, for the severities that have any.",
+      "type": "object",
+      "propertyNames": { "enum": ["UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+      "additionalProperties": { "type": "integer", "minimum": 1 }
+    }
+  }
+}

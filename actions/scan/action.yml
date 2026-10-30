@@ -1,0 +1,255 @@
+name: Scan with Trivy
+description: >
+  Scans with Trivy: a container image, a directory, a root filesystem, a
+  repository, infrastructure as code or an SBOM, for vulnerabilities,
+  misconfigurations, secrets and licenses. Writes a JSON report and the
+  formats in formats (SARIF and a table by default), all rendered from that
+  one scan, plus JUnit, and uploads them as an artifact. Findings at or above
+  fail_on fail the step unless report_only is true; a scan that can't
+  complete, a stale vulnerability database, or a scan that found nothing to
+  check fails it either way. The GitHub Actions twin of the orb's scan
+  command; send the SARIF report to code scanning with
+  github/codeql-action/upload-sarif.
+author: juburr
+
+inputs:
+  target_type:
+    description: >
+      What target is, and the Trivy command that scans it: image (a container
+      image), filesystem (a directory, such as a checkout: lockfiles and source),
+      rootfs (an unpacked root filesystem: installed packages), repository (a git
+      repository, local or remote), config (infrastructure as code: Dockerfiles,
+      Kubernetes, Helm, Terraform, CloudFormation) or sbom (a CycloneDX or SPDX
+      SBOM).
+    default: image
+  target:
+    description: >
+      What to scan: an image reference, such as ghcr.io/org/app:1.0 (Trivy looks for
+      it in Docker, containerd and Podman, then pulls it from its registry), a
+      directory, a repository directory or URL, or an SBOM file. Leave empty with
+      input.
+    default: ""
+  input:
+    description: >
+      For target_type image: an image archive (docker save, gzip allowed) or an OCI
+      image layout directory to scan instead of target, passed as --input.
+    default: ""
+  scanners:
+    description: >
+      What to look for, separated by commas or spaces: vuln, misconfig, secret and
+      license (sbom: vuln and license), always passed as --scanners, so a
+      TRIVY_SCANNERS variable doesn't apply. Leave empty for Trivy's default, vuln
+      and secret (config: misconfiguration only; sbom: vuln).
+    default: ""
+  severity:
+    description: >
+      Severities to report, separated by commas, from UNKNOWN, LOW, MEDIUM, HIGH and
+      CRITICAL, passed as --severity. Trivy leaves the others out of every report.
+      Leave empty to report every severity.
+    default: ""
+  fail_on:
+    description: >
+      The lowest severity that fails the step: a vulnerability, a failed
+      misconfiguration check, a secret or a license at or above it is a finding.
+      Findings below it are reported, and are skipped tests in the JUnit report.
+    default: high
+  fail_on_eol:
+    description: >
+      Also fail when the image's OS is end of life, so its vendor publishes no more
+      fixes, and Trivy's database no new vulnerabilities, for it. Otherwise it is a
+      warning.
+    default: "false"
+  ignore_unfixed:
+    description: >
+      Leave out vulnerabilities that have no fixed version yet (--ignore-unfixed).
+    default: "false"
+  ignore_file:
+    description: >
+      An ignore file of findings to suppress, passed as --ignorefile: a .trivyignore
+      (one ID per line) or a .trivyignore.yaml. Leave empty for .trivyignore in
+      working_dir, or .trivyignore.yaml when there is no .trivyignore. Suppressed
+      findings are counted in the summary, except in config scans, whose Trivy
+      command can't report them.
+    default: ""
+  vex:
+    description: >
+      VEX documents (OpenVEX, CycloneDX VEX or CSAF) whose not_affected and fixed
+      statements suppress vulnerabilities, separated by commas or spaces, each
+      passed as --vex; or repo, oci or sbom-ref for Trivy's other VEX sources.
+    default: ""
+  pkg_types:
+    description: >
+      The packages to check for vulnerabilities: os, library, or os,library, passed
+      as --pkg-types. Leave empty for both.
+    default: ""
+  skip_dirs:
+    description: >
+      Directories to leave out, as globs relative to the scan's root, separated by
+      commas or spaces, each passed as --skip-dirs.
+    default: ""
+  skip_files:
+    description: >
+      Files to leave out, as globs relative to the scan's root, separated by commas
+      or spaces, each passed as --skip-files.
+    default: ""
+  image_src:
+    description: >
+      For images: where to look for the image, in order, from docker, containerd,
+      podman and remote, passed as --image-src. Leave empty to try them all in that
+      order.
+    default: ""
+  platform:
+    description: >
+      For a multi-platform image: the platform to scan, such as linux/arm64, passed
+      as --platform.
+    default: ""
+  cache_dir:
+    description: >
+      Trivy's cache directory, with its databases. Leave empty for the one fetch_db
+      exported in TRIVY_CACHE_DIR, or Trivy's own default, ~/.cache/trivy.
+    default: ""
+  offline:
+    description: >
+      Scan with the databases already in cache_dir, as fetch_db leaves them (for
+      example from the workspace), without updating them (--skip-db-update,
+      --skip-java-db-update, --skip-check-update) or looking up Maven dependencies
+      (--offline-scan). The scan fails without a vulnerability database, or with one
+      older than max_db_age_days.
+    default: "false"
+  max_db_age_days:
+    description: >
+      Fail when the vulnerability database was built more than this many days ago:
+      Trivy uses a stale one silently when it isn't updating it. 0 means no limit.
+      For a client of a Trivy server (--server in extra_args, or TRIVY_SERVER), it
+      is the server's database, which trivy 0.70.0 and later report; with 0, a
+      client whose report doesn't name it passes too.
+    default: "7"
+  allow_empty:
+    description: >
+      Let a scan pass that found nothing to check: no packages for a vulnerability
+      scan, or no infrastructure as code for a configuration scan. By default such a
+      scan fails, since it checked nothing.
+    default: "false"
+  timeout:
+    description: >
+      How long Trivy may take, database downloads included, such as 15m, passed as
+      --timeout. Leave empty for Trivy's 5m.
+    default: ""
+  formats:
+    description: >
+      Reports to write besides <report_name>.json, separated by commas or spaces:
+      sarif (<report_name>.sarif, for GitHub code scanning), table
+      (<report_name>.txt, also printed in the log), cyclonedx
+      (<report_name>.cdx.json) and spdx-json (<report_name>.spdx.json) SBOMs with
+      the vulnerabilities, and github (<report_name>.github.json, a dependency
+      snapshot for GitHub's dependency submission API).
+    default: "sarif,table"
+  extra_args:
+    description: >
+      Further arguments for the Trivy command, such as --detection-priority
+      comprehensive. They are split like shell words, but nothing in them is
+      expanded or run. Options that set the reports, the exit code or the cache
+      directory are refused, and so are --token, --password and --registry-token,
+      which the log would show: set TRIVY_TOKEN, TRIVY_PASSWORD or
+      TRIVY_REGISTRY_TOKEN instead.
+    default: ""
+  working_dir:
+    description: >
+      The directory to run in. target, input and the other paths are relative to it.
+    default: .
+  output_dir:
+    description: >
+      Absolute path of the directory to write the reports into.
+    default: /tmp/trivy-reports
+  report_name:
+    description: >
+      The reports' file name without its extension, such as <report_name>.json:
+      letters, digits, '.', '_' and '-'. Give each scan in a job its own. A report
+      can't replace a file the scan reads, such as an SBOM an earlier scan wrote.
+    default: trivy
+  junit:
+    description: >
+      Write the findings as JUnit (output_dir/junit/<report_name>.xml), failed at or
+      above fail_on and skipped below it, and store it with store_test_results for
+      CircleCI's Tests tab.
+    default: "true"
+  run_record:
+    description: >
+      Also write a run record (<report_name>.run-record.json): what was scanned,
+      with which trivy and databases, with which settings, and what it found.
+    default: "false"
+  report_only:
+    description: >
+      Report findings without failing the step, to adopt the check gradually. A scan
+      that can't complete, a stale database, or one that checked nothing still fails
+      it.
+    default: "false"
+  store_artifacts:
+    description: >
+      Store output_dir as job artifacts under trivy-reports/, including when the
+      step fails.
+    default: "true"
+  no_output_timeout:
+    description: >
+      How long the scan may print nothing before CircleCI stops it, such as 30m for
+      a large image. CircleCI's only; it has no effect here.
+    default: 10m
+
+runs:
+  using: composite
+  steps:
+    # Artifact names must be unique in a workflow run, and the same command
+    # can run in several jobs or matrix legs, so the name ends in a random
+    # suffix.
+    - name: Name the reports artifact
+      id: artifact
+      if: (inputs.store_artifacts == 'true' || inputs.store_artifacts == '1')
+      shell: bash
+      env:
+        REPORT_NAME: ${{ inputs.report_name }}
+      run: |
+        if [[ ! "${REPORT_NAME}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            REPORT_NAME=reports
+        fi
+        printf 'name=trivy-reports-%s-%s\n' "${REPORT_NAME}" "$(od -An -tx1 -N4 /dev/urandom | tr -d ' \n')" >> "${GITHUB_OUTPUT}"
+    - name: Trivy scan
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        PARAM_ALLOW_EMPTY: ${{ inputs.allow_empty }}
+        PARAM_CACHE_DIR: ${{ inputs.cache_dir }}
+        PARAM_EXTRA_ARGS: ${{ inputs.extra_args }}
+        PARAM_FAIL_ON: ${{ inputs.fail_on }}
+        PARAM_FAIL_ON_EOL: ${{ inputs.fail_on_eol }}
+        PARAM_FORMATS: ${{ inputs.formats }}
+        PARAM_IGNORE_FILE: ${{ inputs.ignore_file }}
+        PARAM_IGNORE_UNFIXED: ${{ inputs.ignore_unfixed }}
+        PARAM_IMAGE_SRC: ${{ inputs.image_src }}
+        PARAM_INPUT: ${{ inputs.input }}
+        PARAM_JUNIT: ${{ inputs.junit }}
+        PARAM_MAX_DB_AGE_DAYS: ${{ inputs.max_db_age_days }}
+        PARAM_OFFLINE: ${{ inputs.offline }}
+        PARAM_OUTPUT_DIR: ${{ inputs.output_dir }}
+        PARAM_PKG_TYPES: ${{ inputs.pkg_types }}
+        PARAM_PLATFORM: ${{ inputs.platform }}
+        PARAM_REPORT_NAME: ${{ inputs.report_name }}
+        PARAM_REPORT_ONLY: ${{ inputs.report_only }}
+        PARAM_RUN_RECORD: ${{ inputs.run_record }}
+        PARAM_SCANNERS: ${{ inputs.scanners }}
+        PARAM_SEVERITY: ${{ inputs.severity }}
+        PARAM_SKIP_DIRS: ${{ inputs.skip_dirs }}
+        PARAM_SKIP_FILES: ${{ inputs.skip_files }}
+        PARAM_TARGET: ${{ inputs.target }}
+        PARAM_TARGET_TYPE: ${{ inputs.target_type }}
+        PARAM_TIMEOUT: ${{ inputs.timeout }}
+        PARAM_VEX: ${{ inputs.vex }}
+      run: >-
+        bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/scan.sh"
+        "SCRIPT_TRIVY_LIB=${GITHUB_ACTION_PATH}/../../src/scripts/lib/trivy.sh"
+    - name: Upload the reports
+      if: always() && (inputs.store_artifacts == 'true' || inputs.store_artifacts == '1')
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.artifact.outputs.name }}
+        path: ${{ inputs.output_dir }}
+        if-no-files-found: ignore

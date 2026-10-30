@@ -1,0 +1,34 @@
+description: >
+  Logs in to an OCI registry with trivy registry login, which stores the
+  credentials where Docker does (~/.docker/config.json), so scan can pull
+  private images from it, and later docker, crane or oras commands can use
+  them too. A registry that issues tokens, as most hosted ones do, checks the
+  credentials here; one that uses Basic authentication, such as registry:2,
+  only fails the first scan that uses wrong ones. Run logout when the job no
+  longer needs them.
+parameters:
+  registry:
+    type: string
+    description: >
+      Registry host to log in to, with an optional port, such as ghcr.io or
+      localhost:5000. Environment variables are expanded.
+  username:
+    type: env_var_name
+    default: REGISTRY_USERNAME
+    description: >
+      Name of the environment variable holding the username.
+  password:
+    type: env_var_name
+    default: REGISTRY_PASSWORD
+    description: >
+      Name of the environment variable holding the password or token. It
+      reaches trivy on stdin, never on its command line.
+steps:
+  - run:
+      name: Trivy login
+      environment:
+        PARAM_PASSWORD: << parameters.password >>
+        PARAM_REGISTRY: << parameters.registry >>
+        PARAM_USERNAME: << parameters.username >>
+        SCRIPT_TRIVY_LIB: << include(scripts/lib/trivy.sh) >>
+      command: << include(scripts/login.sh) >>

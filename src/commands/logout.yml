@@ -1,0 +1,16 @@
+description: >
+  Logs out of an OCI registry with trivy registry logout, removing the
+  credentials login stored.
+parameters:
+  registry:
+    type: string
+    description: >
+      Registry host to log out of: the same host login took. Environment
+      variables are expanded.
+steps:
+  - run:
+      name: Trivy logout
+      environment:
+        PARAM_REGISTRY: << parameters.registry >>
+        SCRIPT_TRIVY_LIB: << include(scripts/lib/trivy.sh) >>
+      command: << include(scripts/logout.sh) >>

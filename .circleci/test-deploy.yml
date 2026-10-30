@@ -1,0 +1,479 @@
+version: 2.1
+orbs:
+  # Your orb will be automatically injected here during the pipeline.
+  # Reference your orb's jobs and commands below as they will exist when built.
+  orb-tools: circleci/orb-tools@12.5
+  # The orb definition is intentionally not included here. It will be injected into the pipeline.
+  trivy-orb: {}
+
+# Use this tag to ensure test jobs always run,
+# even though the downstream publish job will only run on release tags.
+filters: &filters
+  tags:
+    only: /.*/
+
+# Filter for release tags.
+release-filters: &release-filters
+  branches:
+    ignore: /.*/
+  tags:
+    only: /^v[0-9]+\.[0-9]+\.[0-9]+$/
+
+# alpine:3.19.0, pinned by digest: end of life, with known vulnerabilities. mirror.gcr.io serves
+# Docker Hub's images without its anonymous pull limits.
+vulnerable-image: &vulnerable-image mirror.gcr.io/library/alpine@sha256:51b67269f354137895d43f3b3d810bfacd3945438e94dc5ac55fdac340352f48
+
+commands:
+  # Copies the scan fixtures out of the checkout into ~/targets, where no path starts with "test"
+  # (Trivy skips secrets under such paths), and writes a GitHub token Trivy's secret rules match into
+  # the vulnerable one. The token is random and made here, so the repository holds no secret.
+  prepare-targets:
+    steps:
+      - run:
+          name: Prepare The Scan Targets
+          command: |
+            mkdir -p ~/targets
+            cp -R tests/fixtures/vulnerable tests/fixtures/clean ~/targets/
+            printf 'GITHUB_TOKEN=ghp_%s\n' "$(openssl rand -hex 18)" > ~/targets/vulnerable/deploy.env
+
+jobs:
+  # Installs the default version and checks it is the binary the checksum table pins, that a second
+  # install takes it from the cache, and that the oldest listed release installs too.
+  install-test:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - trivy-orb/install
+      - run:
+          name: Verify The Install
+          command: |
+            version=$(grep -A3 '^  version:' src/commands/install.yml | sed -n 's/^    default: "\(.*\)"$/\1/p')
+            [[ "$(command -v trivy)" == "${HOME}/bin/trivy" ]]
+            trivy --version | tee /tmp/version.log
+            grep -qx "Version: ${version}" /tmp/version.log
+            expected=$(grep -F "[\"${version}/amd64\"]" src/scripts/install.sh | cut -d'"' -f4)
+            [[ "$(sha512sum ~/bin/trivy | cut -d' ' -f1)" == "${expected}" ]]
+      - run:
+          name: Verify A Second Install Uses The Cache
+          command: |
+            version=$(grep -A3 '^  version:' src/commands/install.yml | sed -n 's/^    default: "\(.*\)"$/\1/p')
+            PARAM_VERSION="${version}" PARAM_VERIFY_CHECKSUMS=strict PARAM_INSTALL_PATH="" PARAM_CACHING=true \
+              PARAM_DOWNLOAD_BASE_URL="" bash src/scripts/install.sh 2>&1 | tee /tmp/second-install.log
+            grep -q "from the cache." /tmp/second-install.log
+            if grep -q "^Downloading" /tmp/second-install.log; then
+              echo "FAIL: the second install downloaded Trivy again."
+              exit 1
+            fi
+      - trivy-orb/install:
+          version: 0.69.2
+          install_path: ~/trivy-0.69.2
+      - run:
+          name: Verify The Oldest Listed Release Installs
+          command: |
+            ~/trivy-0.69.2/trivy --version | grep -qx "Version: 0.69.2"
+  # The releases the table refuses: an unlisted one fails closed, and the ones an attacker published
+  # fail in every mode, before anything is downloaded. Then a local HTTPS mirror in GitHub's layout
+  # serves the real release, which installs, and one whose binary was changed, which doesn't.
+  checksum-test:
+    docker:
+      - image: cimg/python:3.13
+    steps:
+      - checkout
+      - run:
+          name: Unlisted And Compromised Releases Are Refused Before Downloading
+          command: |
+            REPO_DIR=$(pwd)
+            refuse() {
+              local version=$1 mode=$2 expected=$3
+              cd "$(mktemp -d)"
+              if HOME="$(pwd)" PARAM_INSTALL_PATH="$(pwd)/bin" PARAM_VERIFY_CHECKSUMS="${mode}" PARAM_VERSION="${version}" \
+                  PARAM_CACHING=true PARAM_DOWNLOAD_BASE_URL="" bash "${REPO_DIR}/src/scripts/install.sh" > install.log 2>&1; then
+                cat install.log
+                echo "FAIL: ${version} installed with verify_checksums: ${mode}."
+                exit 1
+              fi
+              cat install.log
+              grep -q "${expected}" install.log
+              if [[ -n "$(ls -A | grep -vx install.log)" ]]; then
+                echo "FAIL: install downloaded or installed something before refusing ${version}."
+                ls -laR
+                exit 1
+              fi
+            }
+            # 0.69.1's GitHub release has no assets left, and the table doesn't list it.
+            refuse 0.69.1 strict "This orb has no checksum for Trivy 0.69.1"
+            for mode in strict known_versions false; do
+              refuse 0.69.4 "${mode}" "Trivy 0.69.4 was published by an attacker"
+            done
+      - run:
+          name: A Mirror Serves The Release, And A Changed Binary Is Rejected
+          command: |
+            REPO_DIR=$(pwd)
+            VERSION=$(grep -A3 '^  version:' src/commands/install.yml | sed -n 's/^    default: "\(.*\)"$/\1/p')
+            ASSET="trivy_${VERSION}_Linux-64bit.tar.gz"
+            MIRROR=$(mktemp -d)
+            DIR="${MIRROR}/www/github/aquasecurity/trivy/releases/download/v${VERSION}"
+            mkdir -p "${DIR}"
+            curl --fail --silent --show-error --location --proto '=https' --output "${DIR}/${ASSET}" \
+              "https://github.com/aquasecurity/trivy/releases/download/v${VERSION}/${ASSET}"
+            openssl req -x509 -newkey rsa:2048 -nodes -keyout "${MIRROR}/key.pem" -out "${MIRROR}/cert.pem" -days 1 \
+              -subj /CN=localhost -addext subjectAltName=DNS:localhost 2> /dev/null
+            cat > "${MIRROR}/serve.py" \<< 'EOF'
+            import functools, http.server, ssl, sys
+            handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1])
+            server = http.server.HTTPServer(("127.0.0.1", 8443), handler)
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(sys.argv[2], sys.argv[3])
+            server.socket = context.wrap_socket(server.socket, server_side=True)
+            server.serve_forever()
+            EOF
+            python3 "${MIRROR}/serve.py" "${MIRROR}/www" "${MIRROR}/cert.pem" "${MIRROR}/key.pem" > "${MIRROR}/serve.log" 2>&1 &
+            SERVER=$!
+            trap 'kill "${SERVER}"' EXIT
+            sleep 2
+            install_from_mirror() {
+              rm -rf "${MIRROR}/bin"
+              CURL_CA_BUNDLE="${MIRROR}/cert.pem" PARAM_INSTALL_PATH="${MIRROR}/bin" PARAM_VERIFY_CHECKSUMS=strict \
+                PARAM_VERSION="${VERSION}" PARAM_CACHING=false PARAM_DOWNLOAD_BASE_URL=https://localhost:8443/github \
+                bash "${REPO_DIR}/src/scripts/install.sh"
+            }
+            install_from_mirror 2>&1 | tee "${MIRROR}/good.log"
+            grep -q "Downloading https://localhost:8443/github/aquasecurity/trivy/releases/download/v${VERSION}/${ASSET}" "${MIRROR}/good.log"
+            "${MIRROR}/bin/trivy" --version | grep -qx "Version: ${VERSION}"
+            # The table pins the binary inside the archive, so the binary is what changes.
+            mkdir "${MIRROR}/unpacked"
+            tar -xzf "${DIR}/${ASSET}" -C "${MIRROR}/unpacked"
+            printf 'x' >> "${MIRROR}/unpacked/trivy"
+            tar -czf "${DIR}/${ASSET}" -C "${MIRROR}/unpacked" trivy LICENSE README.md contrib
+            if install_from_mirror > "${MIRROR}/bad.log" 2>&1; then
+              cat "${MIRROR}/bad.log"
+              echo "FAIL: a changed release from the mirror was installed."
+              exit 1
+            fi
+            cat "${MIRROR}/bad.log"
+            grep -q "Checksum verification failed." "${MIRROR}/bad.log"
+  # Installs on an Arm machine, so the arm64 build is chosen and verified; the second install takes
+  # it from the cache.
+  arm64-test:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: arm.medium
+    steps:
+      - checkout
+      - trivy-orb/install
+      - trivy-orb/install
+      - run:
+          name: Verify The arm64 Install
+          command: |
+            [[ "$(uname -m)" == aarch64 ]]
+            version=$(grep -A3 '^  version:' src/commands/install.yml | sed -n 's/^    default: "\(.*\)"$/\1/p')
+            expected=$(grep -F "[\"${version}/arm64\"]" src/scripts/install.sh | cut -d'"' -f4)
+            [[ "$(sha512sum "$(command -v trivy)" | cut -d' ' -f1)" == "${expected}" ]]
+            trivy --version | grep -qx "Version: ${version}"
+  # Fetches the vulnerability database and the checks bundle, checks what fetch_db exported, and
+  # that a second fetch finds them current. The cache directory goes to the workspace for the
+  # offline test.
+  fetch-db-test:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - trivy-orb/install
+      - trivy-orb/fetch_db:
+          checks_bundle: true
+      - run:
+          name: Verify The Databases And The Exports
+          command: |
+            [[ "${TRIVY_CACHE_DIR}" == "${HOME}/.cache/trivy" ]]
+            [[ "${TRIVY_ORB_DB_DIR}" == "${TRIVY_CACHE_DIR}" && "${TRIVY_ORB_CHECKS_DIR}" == "${TRIVY_CACHE_DIR}" ]]
+            [[ -z "${TRIVY_ORB_JAVA_DB_DIR:-}" ]]
+            trivy version --format json | tee /tmp/version.json
+            jq -e '.VulnerabilityDB.UpdatedAt and .CheckBundle.Digest' /tmp/version.json
+            [[ -s "${TRIVY_CACHE_DIR}/db/trivy.db" ]]
+      - run:
+          name: A Second Fetch Finds The Databases Current
+          command: |
+            bash tests/run_command.sh fetch_db checks_bundle=true 2>&1 | tee /tmp/second-fetch.log
+            if grep -q 'Downloading vulnerability DB' /tmp/second-fetch.log; then
+              echo "FAIL: the second fetch downloaded the database again."
+              exit 1
+            fi
+      - persist_to_workspace:
+          root: ~/.cache
+          paths: [trivy]
+  # Scans the fixtures with the real Trivy: a clean directory passes, a vulnerable one fails by
+  # default and passes with report_only, every report is written, an SBOM it wrote scans, a
+  # configuration scan finds the root Dockerfile and the privileged pod, and an image scan finds
+  # alpine 3.19's vulnerabilities and its end of life.
+  scan-test:
+    docker:
+      - image: cimg/base:current
+    environment:
+      REPORTS: /tmp/trivy-reports
+    steps:
+      - checkout
+      - trivy-orb/install
+      - trivy-orb/fetch_db
+      - prepare-targets
+      - trivy-orb/scan:
+          target_type: filesystem
+          target: ~/targets/clean
+          report_name: clean
+          run_record: true
+      - run:
+          name: Verify The Clean Scan
+          command: |
+            jq -e '[.Results[]?.Packages[]?.Name] | index("trivy-orb-fixture-dependency")' "${REPORTS}/clean.json"
+            jq -e '.outcome == "passed" and .counts.findings == 0 and .counts.packages == 1' "${REPORTS}/clean.run-record.json"
+            jq -e '.tool.version and (.databases.VulnerabilityDB.UpdatedAt | length > 0)' "${REPORTS}/clean.run-record.json"
+      - run:
+          name: A Vulnerable Directory Fails The Scan
+          command: |
+            if bash tests/run_command.sh scan target_type=filesystem target="${HOME}/targets/vulnerable" \
+                report_name=vulnerable 2>&1 | tee /tmp/vulnerable.log; then
+              echo "FAIL: the scan passed with findings at or above HIGH."
+              exit 1
+            fi
+            grep -q "at or above HIGH in" /tmp/vulnerable.log
+            jq -e '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "lodash")] | length > 0' "${REPORTS}/vulnerable.json"
+            jq -e '[.Results[]?.Secrets[]? | select(.RuleID == "github-pat")] | length == 1' "${REPORTS}/vulnerable.json"
+            if grep -q 'ghp_' "${REPORTS}/vulnerable.json" "${REPORTS}/vulnerable.txt"; then
+              echo "FAIL: a report holds the token Trivy should have redacted."
+              exit 1
+            fi
+            jq -e --arg root "file://${HOME}/targets/vulnerable/" '.version == "2.1.0" and .runs[0].originalUriBaseIds.ROOTPATH.uri == $root' \
+              "${REPORTS}/vulnerable.sarif"
+            jq -e '[.runs[0].results[].ruleId] | length > 0' "${REPORTS}/vulnerable.sarif"
+            grep -q '<failure ' "${REPORTS}/junit/vulnerable.xml"
+      - trivy-orb/scan:
+          target_type: filesystem
+          target: ~/targets/vulnerable
+          report_name: reported
+          report_only: true
+          run_record: true
+          formats: sarif table cyclonedx spdx-json
+      - run:
+          name: Verify The Reports
+          command: |
+            jq -e '.outcome == "findings-reported" and .counts.failing > 0' "${REPORTS}/reported.run-record.json"
+            jq -e '.bomFormat == "CycloneDX" and ([.components[]?.name] | index("lodash")) and (.vulnerabilities | length > 0)' \
+              "${REPORTS}/reported.cdx.json"
+            jq -e '.spdxVersion and ([.packages[]?.name] | index("lodash"))' "${REPORTS}/reported.spdx.json"
+      - trivy-orb/scan:
+          target_type: sbom
+          target: /tmp/trivy-reports/reported.cdx.json
+          report_name: sbom
+          report_only: true
+      - run:
+          name: Verify The SBOM Scan
+          command: |
+            jq -e '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "lodash")] | length > 0' "${REPORTS}/sbom.json"
+      - run:
+          name: A Configuration Scan Finds The Misconfigurations
+          command: |
+            if bash tests/run_command.sh scan target_type=config target="${HOME}/targets/vulnerable" report_name=config \
+                2>&1 | tee /tmp/config.log; then
+              echo "FAIL: the configuration scan passed."
+              exit 1
+            fi
+            if grep -q 'Falling back to embedded checks' /tmp/config.log; then
+              echo "FAIL: Trivy used its embedded checks instead of the bundle."
+              exit 1
+            fi
+            jq -e '[.Results[] | select(.Target == "pod.yaml") | .Misconfigurations[]? | select(.Status == "FAIL")] | length > 0' "${REPORTS}/config.json"
+            jq -e '[.Results[] | select(.Target == "Dockerfile") | .Misconfigurations[]? | select(.Status == "FAIL")] | length > 0' "${REPORTS}/config.json"
+      - trivy-orb/scan:
+          target: *vulnerable-image
+          report_name: image
+          report_only: true
+          run_record: true
+      - run:
+          name: Verify The Image Scan
+          command: |
+            jq -e '.Metadata.OS.Family == "alpine" and .Metadata.OS.EOSL == true' "${REPORTS}/image.json"
+            jq -e '[.Results[]?.Vulnerabilities[]?] | length > 0' "${REPORTS}/image.json"
+            jq -e '.target.repo_digests | length > 0' "${REPORTS}/image.run-record.json"
+            if bash tests/run_command.sh scan target="mirror.gcr.io/library/alpine@sha256:51b67269f354137895d43f3b3d810bfacd3945438e94dc5ac55fdac340352f48" \
+                fail_on=critical report_name=image-eol fail_on_eol=true formats="" 2>&1 | tee /tmp/eol.log; then
+              echo "FAIL: fail_on_eol passed an end-of-life OS."
+              exit 1
+            fi
+            grep -q "is end of life" /tmp/eol.log
+      # Last, since the server holds the scan cache's lock.
+      - run:
+          name: Start A Trivy Server With The Fetched Database
+          background: true
+          command: trivy server --listen 127.0.0.1:4954 --cache-dir "${TRIVY_CACHE_DIR}" --skip-db-update
+      - run:
+          name: Wait For The Trivy Server
+          command: |
+            for _ in $(seq 30); do
+              if curl -fsS http://127.0.0.1:4954/healthz > /dev/null; then
+                exit 0
+              fi
+              sleep 1
+            done
+            echo "FAIL: the Trivy server didn't start."
+            exit 1
+      - trivy-orb/scan:
+          target_type: filesystem
+          target: ~/targets/vulnerable
+          cache_dir: /tmp/client-cache
+          extra_args: --server http://127.0.0.1:4954
+          report_name: client
+          report_only: true
+          run_record: true
+      - run:
+          name: Verify The Client Scan Checked The Server's Database
+          command: |
+            jq -e '.databases.Server == true and (.databases.VulnerabilityDB.UpdatedAt | length > 0)' "${REPORTS}/client.run-record.json"
+            jq -e '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "lodash")] | length > 0' "${REPORTS}/client.json"
+            if [[ -e /tmp/client-cache/db/metadata.json ]]; then
+              echo "FAIL: the client fetched a vulnerability database of its own."
+              exit 1
+            fi
+  # Scans offline on a machine whose DNS can't reach Trivy's registries: the databases and checks
+  # bundle come from fetch-db-test through the workspace.
+  offline-test:
+    machine:
+      image: ubuntu-2404:current
+    steps:
+      - checkout
+      - trivy-orb/install
+      - attach_workspace:
+          at: ~/.cache
+      - prepare-targets
+      - run:
+          name: Block Trivy's Registries
+          command: |
+            for host in mirror.gcr.io ghcr.io check.trivy.dev repo.maven.apache.org; do
+              echo "0.0.0.0 ${host}" | sudo tee -a /etc/hosts
+            done
+            if curl -s --max-time 5 https://mirror.gcr.io/v2/ > /dev/null; then
+              echo "FAIL: mirror.gcr.io is still reachable."
+              exit 1
+            fi
+      - trivy-orb/scan:
+          target_type: filesystem
+          target: ~/targets/vulnerable
+          cache_dir: ~/.cache/trivy
+          offline: true
+          report_only: true
+          max_db_age_days: 3
+      - run:
+          name: Verify The Offline Scan
+          command: |
+            jq -e '[.Results[]?.Vulnerabilities[]? | select(.PkgName == "lodash")] | length > 0' /tmp/trivy-reports/trivy.json
+            if bash tests/run_command.sh scan target_type=config target="${HOME}/targets/vulnerable" cache_dir="${HOME}/.cache/trivy" \
+                offline=true report_only=true report_name=config 2>&1 | tee /tmp/config.log; then :; else
+              echo "FAIL: the offline configuration scan failed."
+              exit 1
+            fi
+            if grep -q 'Falling back to embedded checks' /tmp/config.log; then
+              echo "FAIL: Trivy didn't use the cached checks bundle offline."
+              exit 1
+            fi
+  # Logs in to a local registry:2 that requires a login, scans a private image there, logs out, and
+  # checks that the registry then refuses the scan.
+  login-test:
+    machine:
+      image: ubuntu-2404:current
+    environment:
+      REGISTRY_HOST: localhost:5000
+      REGISTRY_USER: ci-user
+      REGISTRY_SECRET: ci-password
+    steps:
+      - checkout
+      - run:
+          name: Start A Registry That Requires A Login, With A Private Image
+          command: |
+            # The image is alpine 3.19.0's linux/amd64 manifest: Docker's containerd image store can't push or
+            # save an index it pulled one platform of.
+            for image in mirror.gcr.io/library/httpd:2 mirror.gcr.io/library/registry:2 \
+                mirror.gcr.io/library/alpine@sha256:13b7e62e8df80264dbb747995705a986aa530415763a6c58f84a3ca8af9a5bcd; do
+              for attempt in 1 2 3; do
+                docker pull "${image}" && break
+                sleep $((attempt * 10))
+              done
+            done
+            mkdir -p /tmp/registry-auth
+            docker run --rm --entrypoint htpasswd mirror.gcr.io/library/httpd:2 -Bbn "${REGISTRY_USER}" "${REGISTRY_SECRET}" \
+              > /tmp/registry-auth/htpasswd
+            docker run -d --name registry -p 5000:5000 -v /tmp/registry-auth:/auth \
+              -e REGISTRY_AUTH=htpasswd -e REGISTRY_AUTH_HTPASSWD_REALM=trivy-orb-ci \
+              -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd mirror.gcr.io/library/registry:2
+            for _ in $(seq 1 30); do
+              [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://${REGISTRY_HOST}/v2/")" == "401" ]] && break
+              sleep 1
+            done
+            docker tag mirror.gcr.io/library/alpine@sha256:13b7e62e8df80264dbb747995705a986aa530415763a6c58f84a3ca8af9a5bcd \
+              "${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0"
+            printf '%s' "${REGISTRY_SECRET}" | docker login "${REGISTRY_HOST}" -u "${REGISTRY_USER}" --password-stdin
+            docker push "${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0"
+            docker logout "${REGISTRY_HOST}"
+            docker image rm "${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0"
+      - trivy-orb/install
+      - trivy-orb/fetch_db
+      - trivy-orb/login:
+          registry: ${REGISTRY_HOST}
+          username: REGISTRY_USER
+          password: REGISTRY_SECRET
+      - trivy-orb/scan:
+          target: ${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0
+          image_src: remote
+          report_only: true
+          report_name: private
+      - run:
+          name: Verify The Private Image Scan
+          command: jq -e '.Metadata.OS.Family == "alpine"' /tmp/trivy-reports/private.json
+      - trivy-orb/logout:
+          registry: ${REGISTRY_HOST}
+      - run:
+          name: The Registry Refuses The Scan After Logout
+          command: |
+            if bash tests/run_command.sh scan target="${REGISTRY_HOST}/trivy-orb-ci/alpine:3.19.0" image_src=remote \
+                report_only=true report_name=after-logout 2>&1 | tee /tmp/after-logout.log; then
+              echo "FAIL: the scan read the private image after logout."
+              exit 1
+            fi
+            grep -q "Trivy could not complete the scan" /tmp/after-logout.log
+
+workflows:
+  test-deploy:
+    jobs:
+      # Make sure to include "filters: *filters" in every test job you want to run as part of your deployment.
+      - install-test:
+          filters: *filters
+      - checksum-test:
+          filters: *filters
+      - arm64-test:
+          filters: *filters
+      - fetch-db-test:
+          filters: *filters
+      - scan-test:
+          filters: *filters
+      - offline-test:
+          requires: [fetch-db-test]
+          filters: *filters
+      - login-test:
+          filters: *filters
+      # The orb must be re-packed for publishing, and saved to the workspace.
+      - orb-tools/pack:
+          filters: *release-filters
+      - orb-tools/publish:
+          orb_name: juburr/trivy-orb
+          vcs_type: << pipeline.project.type >>
+          pub_type: production
+          # Ensure this job requires all test jobs and the pack job.
+          requires:
+            - orb-tools/pack
+            - install-test
+            - checksum-test
+            - arm64-test
+            - fetch-db-test
+            - scan-test
+            - offline-test
+            - login-test
+          context: orb-publishing
+          filters: *release-filters

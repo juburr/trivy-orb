@@ -1,0 +1,12 @@
+version: 2.1
+
+description: >
+  Install a checksum-verified Trivy, cache its vulnerability database, and
+  scan container images, filesystems, repositories, infrastructure as code
+  and SBOMs for vulnerabilities, misconfigurations, secrets and licenses,
+  with JSON, SARIF, JUnit, CycloneDX and SPDX reports and a severity gate.
+  Every command has a GitHub Action of the same name.
+
+display:
+  home_url: "https://github.com/juburr/trivy-orb"
+  source_url: "https://github.com/juburr/trivy-orb"

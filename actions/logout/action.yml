@@ -1,0 +1,23 @@
+name: Log out of a registry with Trivy
+description: >
+  Logs out of an OCI registry with trivy registry logout, removing the
+  credentials login stored. The GitHub Actions twin of the orb's logout
+  command.
+author: juburr
+
+inputs:
+  registry:
+    description: >
+      Registry host to log out of: the same host login took.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Trivy logout
+      shell: bash
+      env:
+        PARAM_REGISTRY: ${{ inputs.registry }}
+      run: >-
+        bash "${GITHUB_ACTION_PATH}/../run_script.sh" "${GITHUB_ACTION_PATH}/../../src/scripts/logout.sh"
+        "SCRIPT_TRIVY_LIB=${GITHUB_ACTION_PATH}/../../src/scripts/lib/trivy.sh"

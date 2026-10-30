@@ -1,0 +1,42 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {
+    "Version": "0.76.1"
+  },
+  "ReportID": "019a3b4c-0000-7000-8000-000000000004",
+  "CreatedAt": "2026-10-30T12:00:00Z",
+  "ArtifactName": ".",
+  "ArtifactType": "filesystem",
+  "Metadata": {},
+  "Results": [
+    {
+      "Target": "Dockerfile",
+      "Class": "config",
+      "Type": "dockerfile",
+      "MisconfSummary": {
+        "Successes": 20,
+        "Failures": 1
+      },
+      "Misconfigurations": [
+        {
+          "Type": "Dockerfile Security Check",
+          "ID": "DS-0002",
+          "AVDID": "AVD-DS-0002",
+          "Title": "Image user should not be 'root'",
+          "Description": "Running containers as root is risky.",
+          "Message": "Specify at least 1 USER command in Dockerfile with non-root user as argument",
+          "Resolution": "Add 'USER <non root user name>' line to the Dockerfile",
+          "Severity": "HIGH",
+          "PrimaryURL": "https://avd.aquasec.com/misconfig/ds-0002",
+          "Status": "FAIL",
+          "CauseMetadata": {
+            "Provider": "Dockerfile",
+            "Service": "general",
+            "StartLine": 1,
+            "EndLine": 1
+          }
+        }
+      ]
+    }
+  ]
+}
