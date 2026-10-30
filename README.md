@@ -344,7 +344,7 @@ It exports `TRIVY_CACHE_DIR`, and `TRIVY_ORB_DB_DIR` (and `TRIVY_ORB_JAVA_DB_DIR
 | `store_artifacts` | `true` | Store `output_dir` as artifacts under `trivy-reports/` |
 | `no_output_timeout` | `10m` | How long the scan may be silent |
 
-Trivy's own `TRIVY_*` variables and a `trivy.yaml` in `working_dir` still set the options this command doesn't, such as `TRIVY_INSECURE` or `TRIVY_USERNAME`.
+Trivy's own `TRIVY_*` variables and a `trivy.yaml` in `working_dir` still set the options this command doesn't, such as `TRIVY_INSECURE` or `TRIVY_USERNAME`. The scanners, the report format and output, the exit codes and the cache directory are always the command's.
 
 ### `trivy/login`
 

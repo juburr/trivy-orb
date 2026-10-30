@@ -40,9 +40,10 @@ parameters:
     default: ""
     description: >
       What to look for, separated by commas or spaces: vuln, misconfig,
-      secret and license (sbom: vuln and license). Leave empty for Trivy's
-      default, vuln and secret (config: misconfiguration only; sbom: vuln).
-      Environment variables are expanded.
+      secret and license (sbom: vuln and license), always passed as
+      --scanners, so a TRIVY_SCANNERS variable doesn't apply. Leave empty for
+      Trivy's default, vuln and secret (config: misconfiguration only; sbom:
+      vuln). Environment variables are expanded.
   severity:
     type: string
     default: ""

@@ -123,7 +123,9 @@ for scanner in ${SCANNERS[@]+"${SCANNERS[@]}"}; do
     fi
 done
 # Trivy scans for vulnerabilities and secrets by default, but config for
-# misconfigurations only, and sbom for vulnerabilities only.
+# misconfigurations only, and sbom for vulnerabilities only. The checks below
+# follow ENABLED, so it is what trivy is told to scan for, whatever a job's
+# TRIVY_SCANNERS or a trivy.yaml says (trivy config takes no --scanners).
 if [[ "${#SCANNERS[@]}" -gt 0 ]]; then
     ENABLED=" ${SCANNERS[*]} "
 else
@@ -223,8 +225,9 @@ NOT_CONFIG=false
 if [[ "${TARGET_TYPE}" != config ]]; then
     NOT_CONFIG=true
 fi
-if [[ "${#SCANNERS[@]}" -gt 0 ]]; then
-    TV_ARGS+=("--scanners=$(IFS=,; printf '%s' "${SCANNERS[*]}")")
+if [[ "${NOT_CONFIG}" == true ]]; then
+    read -r -a ENABLED_LIST <<< "${ENABLED}"
+    TV_ARGS+=("--scanners=$(IFS=,; printf '%s' "${ENABLED_LIST[*]}")")
 fi
 if [[ -n "${SEVERITY}" ]]; then
     TV_ARGS+=("--severity=${SEVERITY}")

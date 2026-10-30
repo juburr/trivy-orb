@@ -336,6 +336,7 @@ check "and the image last, after --" scan_ends_with registry.example/app:1.0
 check "never failing on an end-of-life OS itself" scan_has --exit-on-eol 0
 check "updates the databases by default" scan_lacks --skip-db-update
 check "passes no severity, so every one is reported" scan_lacks --severity
+check "and Trivy's default scanners, explicitly" scan_has image --scanners=vuln,secret
 check "says it passed" said "Passed: Trivy found nothing at or above HIGH in registry.example/clean:1.0."
 check "writes the JSON report" report trivy.json
 check "the JSON report is Trivy's" json_is trivy.json .ArtifactName '"registry.example/clean:1.0"'
@@ -385,6 +386,7 @@ check "and passes no --exit-on-eol, which trivy config doesn't take" scan_lacks 
 
 scan target_type=sbom target=bom.json -- STUB_REPORT="${FIXTURES}/clean.json"
 check "an sbom scan runs trivy sbom" scan_first sbom
+check "for vulnerabilities, its default" scan_has sbom --scanners=vuln
 check "with the SBOM after --" scan_ends_with bom.json
 scan target_type=sbom target=bom.json -- STUB_REPORT="${FIXTURES}/clean.json" TRIVY_ORB_CHECKS_DIR="${CACHE}"
 check "without --skip-check-update, which trivy sbom doesn't take" scan_lacks --skip-check-update
@@ -427,7 +429,7 @@ check "and what it scanned" json_is trivy.run-record.json '.target | [.type, .ta
 check "the database it scanned with" json_is trivy.run-record.json '.databases.VulnerabilityDB.Version' 2
 check "the gate" json_is trivy.run-record.json '.gate | [.fail_on, .report_only]' '["HIGH",false]'
 check "the counts" json_is trivy.run-record.json '.counts | [.findings, .failing, .vulnerabilities.CRITICAL, .suppressed]' '[6,3,1,1]'
-check "the arguments, without the reporting options" json_is trivy.run-record.json .arguments '["image"]'
+check "the arguments, without the reporting options" json_is trivy.run-record.json .arguments '["image","--scanners=vuln,secret"]'
 check "and each report with its SHA-256" json_is trivy.run-record.json '[.reports[].path | split("/") | last]' \
     '["trivy.json","trivy.sarif","trivy.txt","trivy.xml"]'
 
@@ -471,6 +473,8 @@ scan target_type=filesystem target=. allow_empty=true -- STUB_REPORT="${FIXTURES
 check "unless allow_empty is true" rc_is 0
 scan target_type=filesystem target=. scanners=secret -- STUB_REPORT="${FIXTURES}/empty.json"
 check "a secret scan that found nothing passes" rc_is 0
+scan target_type=filesystem target=. -- STUB_REPORT="${FIXTURES}/config-clean.json" TRIVY_SCANNERS=misconfig
+check "a job's TRIVY_SCANNERS doesn't change what the checks expect" scan_has filesystem --scanners=vuln,secret
 scan target_type=config target=. -- STUB_REPORT="${FIXTURES}/config-empty.json"
 check "a config scan that found nothing to check fails" rc_is 1
 check "saying so" said "Trivy found no infrastructure as code to check"
