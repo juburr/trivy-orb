@@ -99,7 +99,7 @@ flowchart LR
 version: 2.1
 
 orbs:
-  trivy: juburr/trivy-orb@0.1.0
+  trivy: juburr/trivy-orb@0.2.0
 
 jobs:
   scan:
@@ -135,9 +135,9 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v7
-      - uses: juburr/trivy-orb/actions/install@v0.1.0
-      - uses: juburr/trivy-orb/actions/fetch_db@v0.1.0
-      - uses: juburr/trivy-orb/actions/scan@v0.1.0
+      - uses: juburr/trivy-orb/actions/install@v0.2.0
+      - uses: juburr/trivy-orb/actions/fetch_db@v0.2.0
+      - uses: juburr/trivy-orb/actions/scan@v0.2.0
         with:
           target_type: filesystem
           target: .
@@ -301,7 +301,7 @@ Every parameter that names a value (`version`, `target`, `db_repository` and the
 | `version` | `0.76.1` | Release to install, from 0.69.2 on (see [Checksum Verification](#-checksum-verification)) |
 | `verify_checksums` | `strict` | `strict`, `known_versions` or `false` |
 | `install_path` | `~/bin` | Directory for `trivy`, added to the `PATH` |
-| `download_base_url` | | An https mirror of GitHub Releases, in place of `https://github.com` |
+| `download_base_url` | | An https mirror of GitHub Releases, in place of `https://github.com`. A mirror that needs a login gets the `.netrc` entry for its host; see [Mirrors That Need a Login](#-mirrors-that-need-a-login). |
 | `caching` | `true` | Cache the verified release between jobs |
 
 ### `trivy/fetch_db`
@@ -376,11 +376,11 @@ Every command has a composite action of the same name, with the same inputs and 
 
 | Action | Command |
 |---|---|
-| `juburr/trivy-orb/actions/install@v0.1.0` | `install` |
-| `juburr/trivy-orb/actions/fetch_db@v0.1.0` | `fetch_db` |
-| `juburr/trivy-orb/actions/scan@v0.1.0` | `scan` |
-| `juburr/trivy-orb/actions/login@v0.1.0` | `login` |
-| `juburr/trivy-orb/actions/logout@v0.1.0` | `logout` |
+| `juburr/trivy-orb/actions/install@v0.2.0` | `install` |
+| `juburr/trivy-orb/actions/fetch_db@v0.2.0` | `fetch_db` |
+| `juburr/trivy-orb/actions/scan@v0.2.0` | `scan` |
+| `juburr/trivy-orb/actions/login@v0.2.0` | `login` |
+| `juburr/trivy-orb/actions/logout@v0.2.0` | `logout` |
 
 What one action exports, later steps see, as with CircleCI's `BASH_ENV`. A few differences:
 
@@ -389,7 +389,7 @@ What one action exports, later steps see, as with CircleCI's `BASH_ENV`. A few d
 - **The reports are uploaded as an artifact** named `trivy-reports-<report_name>-<random>`. Send the SARIF report to code scanning with `github/codeql-action/upload-sarif`, as the [Quick Start](#github-actions) does.
 - **Set credentials in the environment** of the step that uses `login`: `username` and `password` name variables.
 - **`fetch_db` caches with `actions/cache`**, keyed as on CircleCI.
-- **Pin the actions to a commit SHA** for the strongest guarantee: `juburr/trivy-orb/actions/scan@<sha> # v0.1.0`.
+- **Pin the actions to a commit SHA** for the strongest guarantee: `juburr/trivy-orb/actions/scan@<sha> # v0.2.0`.
 
 ## 🔒 Secure by Design
 
@@ -406,6 +406,30 @@ What one action exports, later steps see, as with CircleCI's `BASH_ENV`. A few d
 - **Executors.** Linux on amd64 or arm64, with bash 4, curl or wget, tar, gzip and jq: `cimg/base`, CircleCI's machine images, and GitHub's Ubuntu runners. Trivy is a static binary.
 - **Images.** Trivy pulls images from their registry itself, so `cimg/base` needs no Docker; on a machine executor, `image_src: docker` scans an image straight from the daemon.
 - **Trivy.** Every release from 0.69.2 to 0.76.1. CI tests the default on both architectures, and 0.69.2's install.
+
+## 🔑 Mirrors That Need a Login
+
+`download_base_url` points the install at an internal mirror, such as an Artifactory remote repository. When the mirror needs a login, the install takes it from the entry for the mirror's host in the `.netrc` file (`NETRC`, or `~/.netrc`), which an earlier step writes, such as from a context's variables. Artifactory takes an access token as the password.
+
+```yaml
+- run:
+    name: Log In to the Mirror
+    command: |
+      umask 077
+      printf 'machine %s login %s password %s\n' artifactory.example.com "${ARTIFACTORY_USER}" "${ARTIFACTORY_TOKEN}" >> ~/.netrc
+```
+
+`printf` is a shell builtin, so the token never reaches a command line.
+
+How the login is kept to the mirror:
+
+- **One entry, in a private file.** The install copies the first complete entry for the mirror's host, alone, into a file only the job's user can read, and gives that file to curl. curl never reads the rest of your `.netrc`: not a `default` entry, not an entry without a password (curl 7.76.0 to 8.11.1 could send a password on to a host the server redirects to, CVE-2024-11053 and CVE-2025-0167, when the `.netrc` held either), and not a token for another host, such as `github.com`.
+- **Only for the mirror.** curl gets the file only for URLs under the mirror. Downloads from anywhere else get no login.
+- **Never past a redirect.** When the mirror redirects a download to another host, such as the cloud storage an Artifactory keeps its files in, that host gets no login, even when a `~/.curlrc` says `location-trusted`.
+- **curl only.** wget reads every entry in `~/.netrc` and can't be limited to one, so an install that would send a mirror login with wget fails and asks for curl.
+- **Out of the log.** The log names the `.netrc` file and the host, never the login. A `.netrc` other users can read is reported.
+
+An entry the install can't use as curl would, one without a login or password or with a quoted value, is reported, and the mirror is then asked without a login. A mirror that refuses a download without one is reported with the entry it needs.
 
 ## 🔐 Checksum Verification
 
